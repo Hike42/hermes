@@ -1,65 +1,397 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+
+interface VideoInfo {
+  title: string;
+  author: string;
+  thumbnail: string;
+  lengthSeconds: number;
+  viewCount: number;
+  audioFormats?: Array<{ id: string; quality: string; ext: string }>;
+  videoFormats?: Array<{ id: string; quality: string; ext: string }>;
+}
 
 export default function Home() {
+  const [url, setUrl] = useState('');
+  const [format, setFormat] = useState<'mp3' | 'mp4'>('mp4');
+  const [loading, setLoading] = useState(false);
+  const [loadingInfo, setLoadingInfo] = useState(false);
+  const [error, setError] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [selectedQuality, setSelectedQuality] = useState<string>('best');
+
+  const validateYouTubeUrl = (url: string): boolean => {
+    const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
+    return pattern.test(url);
+  };
+
+  // Fonction pour récupérer les informations de la vidéo
+  const fetchVideoInfo = useCallback(async (videoUrl: string) => {
+    if (!validateYouTubeUrl(videoUrl)) {
+      setVideoInfo(null);
+      return;
+    }
+
+    setLoadingInfo(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/info', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: videoUrl }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Erreur lors de la récupération' }));
+        throw new Error(errorData.error || 'Erreur lors de la récupération des informations');
+      }
+
+      const info = await response.json();
+      setVideoInfo(info);
+      
+      // Sélectionner la meilleure qualité par défaut
+      if (format === 'mp3' && info.audioFormats && info.audioFormats.length > 0) {
+        setSelectedQuality('best');
+      } else if (format === 'mp4' && info.videoFormats && info.videoFormats.length > 0) {
+        setSelectedQuality('best');
+      }
+    } catch (err) {
+      console.error('Erreur:', err);
+      setVideoInfo(null);
+      if (err instanceof Error && !err.message.includes('aborted')) {
+        setError(err.message);
+      }
+    } finally {
+      setLoadingInfo(false);
+    }
+  }, [format]);
+
+  // Debounce pour récupérer les infos
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (url.trim() && validateYouTubeUrl(url)) {
+        fetchVideoInfo(url);
+      } else {
+        setVideoInfo(null);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [url, fetchVideoInfo]);
+
+  // Réinitialiser les qualités quand le format change
+  useEffect(() => {
+    if (videoInfo) {
+      if (format === 'mp3' && videoInfo.audioFormats && videoInfo.audioFormats.length > 0) {
+        setSelectedQuality('best');
+      } else if (format === 'mp4' && videoInfo.videoFormats && videoInfo.videoFormats.length > 0) {
+        setSelectedQuality('best');
+      }
+    }
+  }, [format, videoInfo]);
+
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatViews = (count: number): string => {
+    if (count >= 1000000) {
+      return `${(count / 1000000).toFixed(1)}M`;
+    }
+    if (count >= 1000) {
+      return `${(count / 1000).toFixed(1)}K`;
+    }
+    return count.toString();
+  };
+
+  const handleDownload = async () => {
+    if (!url.trim()) {
+      setError('Veuillez entrer une URL YouTube');
+      return;
+    }
+
+    if (!validateYouTubeUrl(url)) {
+      setError('URL YouTube invalide');
+      return;
+    }
+
+    setError('');
+    setLoading(true);
+    setProgress(10);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 360000);
+
+    try {
+      setProgress(20);
+      const response = await fetch('/api/download', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url, format, quality: selectedQuality }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      setProgress(60);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Erreur lors du téléchargement' }));
+        throw new Error(errorData.error || 'Erreur lors du téléchargement');
+      }
+
+      setProgress(80);
+      const blob = await response.blob();
+      setProgress(90);
+      
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `video.${format}`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch) {
+          filename = decodeURIComponent(filenameMatch[1]);
+        }
+      }
+      
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(downloadUrl);
+      document.body.removeChild(a);
+
+      setUrl('');
+      setProgress(100);
+      setVideoInfo(null);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err instanceof Error) {
+        if (err.name === 'AbortError') {
+          setError('Le téléchargement a pris trop de temps. Veuillez réessayer avec une vidéo plus courte.');
+        } else {
+          setError(err.message || 'Une erreur est survenue');
+        }
+      } else {
+        setError('Une erreur est survenue lors du téléchargement');
+      }
+    } finally {
+      setLoading(false);
+      setTimeout(() => setProgress(0), 2000);
+    }
+  };
+
+  const availableQualities = format === 'mp3' 
+    ? videoInfo?.audioFormats 
+    : videoInfo?.videoFormats;
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
+      <div className="w-full max-w-3xl">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl p-8 md:p-12">
+          <div className="text-center mb-8">
+            <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-white mb-3">
+              YouTube Downloader
+            </h1>
+            <p className="text-slate-600 dark:text-slate-400 text-lg">
+              Téléchargez vos vidéos YouTube en MP3 ou MP4
+            </p>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label htmlFor="url" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                URL YouTube
+              </label>
+              <div className="relative">
+                <input
+                  id="url"
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10"
+                  disabled={loading}
+                />
+                {loadingInfo && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <svg className="animate-spin h-5 w-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Affichage des informations de la vidéo */}
+            {videoInfo && (
+              <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-4 border border-slate-200 dark:border-slate-600">
+                <div className="flex gap-4">
+                  {videoInfo.thumbnail && (
+                    <img
+                      src={videoInfo.thumbnail}
+                      alt={videoInfo.title}
+                      className="w-32 h-24 object-cover rounded-lg flex-shrink-0"
+                    />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-slate-900 dark:text-white text-lg mb-1 line-clamp-2">
+                      {videoInfo.title}
+                    </h3>
+                    <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
+                      {videoInfo.author}
+                    </p>
+                    <div className="flex gap-4 text-xs text-slate-500 dark:text-slate-400">
+                      <span>⏱️ {formatDuration(videoInfo.lengthSeconds)}</span>
+                      {videoInfo.viewCount && (
+                        <span>👁️ {formatViews(videoInfo.viewCount)} vues</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
+                Format
+              </label>
+              <div className="flex gap-4">
+                <button
+                  onClick={() => setFormat('mp4')}
+                  disabled={loading}
+                  className={`flex-1 py-3 px-6 rounded-lg font-medium transition-all ${
+                    format === 'mp4'
+                      ? 'bg-blue-600 text-white shadow-lg scale-105'
+                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                  } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  MP4 (Vidéo)
+                </button>
+                <button
+                  onClick={() => setFormat('mp3')}
+                  disabled={loading}
+                  className={`flex-1 py-3 px-6 rounded-lg font-medium transition-all ${
+                    format === 'mp3'
+                      ? 'bg-blue-600 text-white shadow-lg scale-105'
+                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                  } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  MP3 (Audio)
+                </button>
+              </div>
+            </div>
+
+            {/* Sélecteur de qualité */}
+            {videoInfo && availableQualities && availableQualities.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
+                  Qualité {format === 'mp3' ? 'audio' : 'vidéo'}
+                </label>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setSelectedQuality('best')}
+                    disabled={loading}
+                    className={`w-full py-2.5 px-4 rounded-lg text-sm font-medium transition-all text-left ${
+                      selectedQuality === 'best'
+                        ? 'bg-blue-600 text-white shadow-md border-2 border-blue-700'
+                        : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 border-2 border-transparent'
+                    } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span className="font-semibold">⭐ Meilleure qualité</span>
+                    <span className="block text-xs mt-0.5 opacity-90">
+                      {format === 'mp3' ? 'Audio de meilleure qualité disponible' : 'Vidéo de meilleure qualité disponible'}
+                    </span>
+                  </button>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1">
+                    {availableQualities.slice(0, 8).map((quality) => (
+                      <button
+                        key={quality.id}
+                        onClick={() => setSelectedQuality(quality.id)}
+                        disabled={loading}
+                        className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
+                          selectedQuality === quality.id
+                            ? 'bg-blue-600 text-white shadow-md border-2 border-blue-700'
+                            : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 border-2 border-transparent'
+                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        {quality.quality}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded-lg">
+                {error}
+              </div>
+            )}
+
+            {loading && (
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm text-slate-600 dark:text-slate-400">
+                  <span>
+                    {progress < 20 && 'Préparation...'}
+                    {progress >= 20 && progress < 60 && 'Téléchargement en cours...'}
+                    {progress >= 60 && progress < 80 && 'Finalisation...'}
+                    {progress >= 80 && 'Téléchargement terminé !'}
+                  </span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                  <div
+                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={handleDownload}
+              disabled={loading || !url.trim() || loadingInfo}
+              className={`w-full py-4 px-6 rounded-lg font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all transform ${
+                loading || !url.trim() || loadingInfo
+                  ? 'opacity-50 cursor-not-allowed'
+                  : 'hover:scale-105 active:scale-95'
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Téléchargement en cours...
+                </span>
+              ) : (
+                'Télécharger'
+              )}
+            </button>
+          </div>
+
+          <div className="mt-8 pt-8 border-t border-slate-200 dark:border-slate-700">
+            <p className="text-center text-sm text-slate-500 dark:text-slate-400">
+              Cet outil est à des fins éducatives uniquement. Respectez les droits d&apos;auteur.
+            </p>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      </div>
     </div>
   );
 }

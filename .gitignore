@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# temp files
+/temp
+
+# YouTube player scripts (générés par ytdl-core)
+*-base.js
+*-player-script.js
