@@ -75,14 +75,23 @@ export async function POST(request: NextRequest) {
     let streamError: Error | null = null;
     let bytesDownloaded = 0;
     let lastProgressTime = Date.now();
+    let hasStartedDownloading = false;
 
     audioStream.on('error', (error: any) => {
-      console.error('❌ Erreur du stream audio:', error.message || error);
-      streamError = error;
+      const errorMsg = error.message || String(error);
+      console.error('❌ Erreur du stream audio:', errorMsg);
+      
+      // Si c'est une erreur 403, c'est que YouTube bloque l'accès
+      if (errorMsg.includes('403') || error.statusCode === 403) {
+        streamError = new Error('YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction car YouTube a changé son système de protection.');
+      } else {
+        streamError = error;
+      }
       writeStream.destroy();
     });
 
     audioStream.on('data', (chunk: Buffer) => {
+      hasStartedDownloading = true;
       bytesDownloaded += chunk.length;
       const now = Date.now();
       // Afficher la progression toutes les 2 secondes
@@ -106,12 +115,12 @@ export async function POST(request: NextRequest) {
       writeStream.on('finish', () => {
         clearTimeout(timeout);
         if (streamError) {
-          // Vérifier si c'est une erreur 403
-          if (streamError.message && streamError.message.includes('403')) {
-            reject(new Error('YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction.'));
-          } else {
-            reject(streamError);
-          }
+          reject(streamError);
+          return;
+        }
+        // Vérifier qu'on a bien téléchargé quelque chose
+        if (!hasStartedDownloading || bytesDownloaded === 0) {
+          reject(new Error('Aucune donnée téléchargée. YouTube bloque probablement l\'accès (403).'));
           return;
         }
         console.log(`✅ Téléchargement audio terminé: ${(bytesDownloaded / 1024 / 1024).toFixed(2)} MB`);
@@ -234,14 +243,16 @@ export async function POST(request: NextRequest) {
       errorMessage = error.message;
       
       // Messages d'erreur spécifiques
-      if (errorMessage.includes('403')) {
-        errorMessage = 'YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction.\n\n💡 Solutions possibles:\n- Réessayez plus tard (peut être temporaire)\n- Utilisez une autre vidéo\n- YouTube renforce ses restrictions anti-téléchargement';
+      if (errorMessage.includes('403') || errorMessage.includes('bloque l\'accès')) {
+        errorMessage = 'YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction car YouTube a changé son système de protection.\n\n⚠️ Limitation connue: ytdl-core devient obsolète face aux protections YouTube.\n\n💡 Solutions possibles:\n- Réessayez plus tard (peut être temporaire)\n- Utilisez une autre vidéo\n- Certaines vidéos fonctionnent encore, d\'autres non';
       } else if (errorMessage.includes('Sign in to confirm your age')) {
         errorMessage = 'Cette vidéo nécessite une vérification d\'âge et ne peut pas être téléchargée.';
       } else if (errorMessage.includes('Private video')) {
         errorMessage = 'Cette vidéo est privée et ne peut pas être téléchargée.';
-      } else if (errorMessage.includes('decipher') || errorMessage.includes('parse')) {
-        errorMessage = 'YouTube a changé son système de protection. ytdl-core ne peut pas décoder cette vidéo.\n\n💡 Cette limitation est connue avec ytdl-core qui devient obsolète face aux protections YouTube.';
+      } else if (errorMessage.includes('decipher') || errorMessage.includes('parse') || errorMessage.includes('Stream URLs will be missing')) {
+        errorMessage = 'YouTube a changé son système de protection. ytdl-core ne peut pas décoder cette vidéo.\n\n⚠️ Les warnings "Could not parse decipher function" indiquent que YouTube a mis à jour ses protections.\n\n💡 Cette limitation est connue avec ytdl-core qui devient obsolète face aux protections YouTube.';
+      } else if (errorMessage.includes('Aucune donnée téléchargée')) {
+        errorMessage = 'Aucune donnée n\'a pu être téléchargée. YouTube bloque probablement l\'accès (403).\n\n⚠️ ytdl-core ne peut pas contourner les restrictions YouTube actuelles.';
       }
     }
 
