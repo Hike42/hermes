@@ -6,12 +6,15 @@ FROM node:20-slim
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-venv \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Installer yt-dlp
-RUN pip3 install --no-cache-dir yt-dlp
+# Utiliser --break-system-packages car on est dans un conteneur Docker isolé
+# (sécurisé car l'environnement est isolé)
+RUN pip3 install --no-cache-dir --break-system-packages yt-dlp
 
 # Vérifier les installations
 RUN yt-dlp --version && ffmpeg -version
