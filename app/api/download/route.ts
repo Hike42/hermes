@@ -73,10 +73,23 @@ export async function POST(request: NextRequest) {
 
     // Gérer les erreurs du stream
     let streamError: Error | null = null;
+    let bytesDownloaded = 0;
+    let lastProgressTime = Date.now();
+
     audioStream.on('error', (error: any) => {
-      console.error('❌ Erreur du stream audio:', error);
+      console.error('❌ Erreur du stream audio:', error.message || error);
       streamError = error;
       writeStream.destroy();
+    });
+
+    audioStream.on('data', (chunk: Buffer) => {
+      bytesDownloaded += chunk.length;
+      const now = Date.now();
+      // Afficher la progression toutes les 2 secondes
+      if (now - lastProgressTime > 2000) {
+        console.log(`📊 Téléchargement en cours: ${(bytesDownloaded / 1024 / 1024).toFixed(2)} MB`);
+        lastProgressTime = now;
+      }
     });
 
     audioStream.pipe(writeStream);
@@ -93,10 +106,15 @@ export async function POST(request: NextRequest) {
       writeStream.on('finish', () => {
         clearTimeout(timeout);
         if (streamError) {
-          reject(streamError);
+          // Vérifier si c'est une erreur 403
+          if (streamError.message && streamError.message.includes('403')) {
+            reject(new Error('YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction.'));
+          } else {
+            reject(streamError);
+          }
           return;
         }
-        console.log('✅ Téléchargement audio terminé');
+        console.log(`✅ Téléchargement audio terminé: ${(bytesDownloaded / 1024 / 1024).toFixed(2)} MB`);
         resolve();
       });
 
@@ -217,11 +235,13 @@ export async function POST(request: NextRequest) {
       
       // Messages d'erreur spécifiques
       if (errorMessage.includes('403')) {
-        errorMessage = 'YouTube bloque l\'accès (403). Cela peut être temporaire. Réessayez plus tard.';
+        errorMessage = 'YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction.\n\n💡 Solutions possibles:\n- Réessayez plus tard (peut être temporaire)\n- Utilisez une autre vidéo\n- YouTube renforce ses restrictions anti-téléchargement';
       } else if (errorMessage.includes('Sign in to confirm your age')) {
         errorMessage = 'Cette vidéo nécessite une vérification d\'âge et ne peut pas être téléchargée.';
       } else if (errorMessage.includes('Private video')) {
         errorMessage = 'Cette vidéo est privée et ne peut pas être téléchargée.';
+      } else if (errorMessage.includes('decipher') || errorMessage.includes('parse')) {
+        errorMessage = 'YouTube a changé son système de protection. ytdl-core ne peut pas décoder cette vidéo.\n\n💡 Cette limitation est connue avec ytdl-core qui devient obsolète face aux protections YouTube.';
       }
     }
 
