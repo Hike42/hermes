@@ -837,7 +837,8 @@ export async function POST(request: NextRequest) {
       }
     } else {
       return NextResponse.json(
-        { status: 400 }
+        { error: 'yt-dlp est requis pour télécharger l\'audio. Veuillez installer yt-dlp.' },
+        { status: 500 }
       );
     }
   } catch (error) {
