@@ -471,7 +471,19 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     const args: string[] = [];
     
     // Options de compatibilité YouTube essentielles
-    args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+    // Si on a un token PO, l'ajouter aux arguments extractor
+    let extractorArgs = `youtube:player_client=${playerClient}`;
+    if (poToken) {
+      // Pour le client Android, le format est: android.gvs+TOKEN
+      // Pour les autres clients, on peut utiliser directement le token
+      if (playerClient === 'android') {
+        extractorArgs += `;po_token=android.gvs+${poToken}`;
+      } else {
+        extractorArgs += `;po_token=${poToken}`;
+      }
+      console.log('🔑 Utilisation du token PO pour accéder aux formats haute qualité');
+    }
+    args.push('--extractor-args', extractorArgs);
     // Ajouter des options de compatibilité supplémentaires
     args.push('--no-playlist', '--progress', '--newline', '--no-mtime');
     
