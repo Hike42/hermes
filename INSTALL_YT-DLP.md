@@ -81,3 +81,4 @@ L'application détectera automatiquement yt-dlp et l'utilisera en priorité.
 
 ### Version obsolète
 - Mettez à jour: `brew upgrade yt-dlp` (macOS) ou `pip install --upgrade yt-dlp`
+

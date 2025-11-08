@@ -9,3 +9,4 @@ services:
       - key: NODE_ENV
         value: production
     # Note: Render nécessite un Dockerfile pour installer yt-dlp et ffmpeg
+

@@ -10,10 +10,11 @@ const execAsync = promisify(exec);
 // Fonction pour vérifier si yt-dlp est disponible
 async function isYtDlpAvailable(): Promise<boolean> {
   const possiblePaths = [
-    'yt-dlp',
+    'yt-dlp', // Dans le PATH
+    '/root/.local/bin/yt-dlp', // Pip user install (Docker)
+    '/usr/local/bin/yt-dlp', // Pip system install / Homebrew sur Intel Mac
     '/opt/homebrew/bin/yt-dlp', // Homebrew sur Apple Silicon
-    '/usr/local/bin/yt-dlp', // Homebrew sur Intel Mac
-    '/usr/bin/yt-dlp', // Linux standard
+    '/usr/bin/yt-dlp', // Linux standard (apt)
   ];
 
   for (const ytDlpPath of possiblePaths) {
@@ -26,16 +27,30 @@ async function isYtDlpAvailable(): Promise<boolean> {
     }
   }
   
+  // Dernière tentative : utiliser 'which' pour trouver yt-dlp
+  try {
+    const { stdout } = await execAsync('which yt-dlp', { timeout: 5000 });
+    const foundPath = stdout.trim();
+    if (foundPath) {
+      await execAsync(`${foundPath} --version`, { timeout: 5000 });
+      console.log(`✅ yt-dlp trouvé à: ${foundPath}`);
+      return true;
+    }
+  } catch {
+    // Ignorer
+  }
+  
   return false;
 }
 
 // Fonction pour trouver le chemin de yt-dlp
 async function findYtDlpPath(): Promise<string | null> {
   const possiblePaths = [
-    'yt-dlp',
+    'yt-dlp', // Dans le PATH
+    '/root/.local/bin/yt-dlp', // Pip user install (Docker)
+    '/usr/local/bin/yt-dlp', // Pip system install / Homebrew sur Intel Mac
     '/opt/homebrew/bin/yt-dlp', // Homebrew sur Apple Silicon
-    '/usr/local/bin/yt-dlp', // Homebrew sur Intel Mac
-    '/usr/bin/yt-dlp', // Linux standard
+    '/usr/bin/yt-dlp', // Linux standard (apt)
   ];
 
   for (const ytDlpPath of possiblePaths) {
@@ -47,15 +62,42 @@ async function findYtDlpPath(): Promise<string | null> {
     }
   }
   
+  // Dernière tentative : utiliser 'which' pour trouver yt-dlp
+  try {
+    const { stdout } = await execAsync('which yt-dlp', { timeout: 5000 });
+    const foundPath = stdout.trim();
+    if (foundPath) {
+      await execAsync(`${foundPath} --version`, { timeout: 5000 });
+      return foundPath;
+    }
+  } catch {
+    // Ignorer
+  }
+  
   return null;
 }
 
+// Fonction pour mettre à jour yt-dlp (en arrière-plan, ne bloque pas)
+async function updateYtDlpIfNeeded(ytDlpPath: string): Promise<void> {
+  try {
+    // Vérifier si yt-dlp peut être mis à jour (ne bloque pas si ça échoue)
+    execAsync(`${ytDlpPath} -U`, { timeout: 30000 }).catch(() => {
+      // Ignorer les erreurs de mise à jour, ce n'est pas critique
+    });
+  } catch {
+    // Ignorer silencieusement
+  }
+}
+
 // Fonction pour télécharger avec yt-dlp
-async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string): Promise<{ filePath: string; fileName: string }> {
+async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string, useAndroidClient: boolean = false): Promise<{ filePath: string; fileName: string }> {
   const ytDlpPath = await findYtDlpPath();
   if (!ytDlpPath) {
     throw new Error('yt-dlp non trouvé');
   }
+  
+  // Essayer de mettre à jour yt-dlp en arrière-plan (non bloquant)
+  updateYtDlpIfNeeded(ytDlpPath).catch(() => {});
 
   // Nettoyer l'URL pour éviter de télécharger toute la playlist
   const urlOnly = url.split('&list=')[0].split('&start_radio=')[0];
@@ -87,32 +129,48 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     // Construire les arguments directement
     const args: string[] = [];
     
+    // Options de compatibilité YouTube essentielles
+    // Utiliser différents clients selon le paramètre (web par défaut, android en fallback)
+    const playerClient = useAndroidClient ? 'android' : 'web';
+    args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+    // Ajouter des options de compatibilité supplémentaires
+    args.push('--no-playlist', '--progress', '--newline', '--no-mtime');
+    
     if (format === 'mp3') {
       // Pour MP3, extraire l'audio et convertir en MP3
       if (quality && quality !== 'best') {
         // Si une qualité spécifique est demandée, utiliser le format ID
-        args.push('--no-playlist', '-f', quality, '-x', '--audio-format', 'mp3', '--audio-quality', '192K', '--progress', '--newline', '--no-mtime', '-o', outputTemplate, urlOnly);
+        // Essayer d'abord avec le format spécifique, puis fallback sur bestaudio
+        args.push('-f', `${quality}/bestaudio/best`, '-x', '--audio-format', 'mp3', '--audio-quality', '192K');
       } else {
-        // Meilleure qualité par défaut
-        args.push('--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '192K', '--progress', '--newline', '--no-mtime', '-o', outputTemplate, urlOnly);
+        // Meilleure qualité par défaut - laisser yt-dlp choisir le meilleur format audio
+        args.push('-x', '--audio-format', 'mp3', '--audio-quality', '192K');
       }
     } else {
       // Pour MP4, télécharger directement en MP4
       if (quality && quality !== 'best') {
         // Si une qualité spécifique est demandée, utiliser le format ID
         // Si le format a déjà l'audio, utiliser directement, sinon combiner avec le meilleur audio
-        args.push('--no-playlist', '-f', `${quality}+bestaudio/best`, '--progress', '--newline', '--no-mtime', '-o', outputTemplate, urlOnly);
+        args.push('-f', `${quality}+bestaudio/best[ext=mp4]/best`);
       } else {
         // Meilleure qualité par défaut (préférer les formats combinés)
-        args.push('--no-playlist', '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', '--progress', '--newline', '--no-mtime', '-o', outputTemplate, urlOnly);
+        args.push('-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best');
       }
     }
     
-    console.log(`🚀 Lancement: ${ytDlpPath} ${args.slice(0, 5).join(' ')}...`);
+    // Ajouter le template de sortie et l'URL en dernier
+    args.push('-o', outputTemplate, urlOnly);
+    
+    console.log(`🚀 Lancement: ${ytDlpPath} ${args.join(' ')}`);
     
     const ytDlpProcess = spawn(ytDlpPath, args, {
       cwd: tempDir,
       shell: false,
+      env: {
+        ...process.env,
+        // Forcer l'utilisation de Python 3 si disponible
+        PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+      },
     });
     
     let stdout = '';
@@ -158,8 +216,20 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
       
       if (code !== 0) {
         console.error('❌ yt-dlp a échoué avec le code:', code);
-        console.error('stderr:', stderr.substring(0, 500));
-        reject(new Error(`yt-dlp a échoué (code ${code}): ${stderr.substring(0, 200) || stdout.substring(0, 200)}`));
+        console.error('stderr:', stderr.substring(0, 1000));
+        console.error('stdout:', stdout.substring(0, 1000));
+        
+        // Si l'erreur est liée à YouTube (400, 403, Precondition check failed)
+        // Et qu'on n'a pas encore essayé avec le client Android, signaler qu'on peut réessayer
+        if ((stderr.includes('Precondition check failed') || 
+            stderr.includes('HTTP Error 400') || 
+            stderr.includes('HTTP Error 403') ||
+            stderr.includes('Signature extraction failed')) && !useAndroidClient) {
+          // Cette erreur sera gérée par l'appelant pour réessayer avec le client Android
+          reject(new Error('YOUTUBE_CLIENT_WEB_FAILED'));
+        } else {
+          reject(new Error(`yt-dlp a échoué (code ${code}): ${stderr.substring(0, 300) || stdout.substring(0, 300)}`));
+        }
         return;
       }
       
@@ -265,7 +335,52 @@ export async function POST(request: NextRequest) {
       try {
         console.log('📦 Utilisation de yt-dlp...');
         const videoTitle = info.videoDetails.title;
-        const { filePath, fileName } = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality);
+        let filePath: string, fileName: string;
+        
+        try {
+          // Essayer d'abord avec le client web (par défaut)
+          const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, false);
+          filePath = result.filePath;
+          fileName = result.fileName;
+        } catch (error: any) {
+          // Si le client web échoue avec une erreur YouTube spécifique, essayer avec le client Android
+          if (error.message === 'YOUTUBE_CLIENT_WEB_FAILED') {
+            console.warn('⚠️ Client web a échoué, tentative avec le client Android...');
+            try {
+              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, true);
+              filePath = result.filePath;
+              fileName = result.fileName;
+            } catch (androidError: any) {
+              // Si le client Android échoue aussi et qu'un format spécifique était demandé, 
+              // essayer sans format spécifique (laisser yt-dlp choisir)
+              if (quality && quality !== 'best') {
+                console.warn(`⚠️ Format ${quality} a échoué, tentative sans format spécifique...`);
+                const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', true);
+                filePath = result.filePath;
+                fileName = result.fileName;
+              } else {
+                throw androidError;
+              }
+            }
+          } else if (quality && quality !== 'best') {
+            // Si une erreur autre et qu'un format spécifique était demandé, essayer sans format spécifique
+            console.warn(`⚠️ Format ${quality} a échoué, tentative sans format spécifique...`);
+            try {
+              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', false);
+              filePath = result.filePath;
+              fileName = result.fileName;
+            } catch (fallbackError) {
+              // Si même le fallback échoue, essayer avec le client Android
+              console.warn('⚠️ Tentative avec le client Android et format automatique...');
+              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', true);
+              filePath = result.filePath;
+              fileName = result.fileName;
+            }
+          } else {
+            throw error;
+          }
+        }
+        
         console.log('✅ Fichier téléchargé:', fileName);
         
         // Attendre un peu pour s'assurer que le fichier est complètement écrit

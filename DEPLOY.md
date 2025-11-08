@@ -190,3 +190,4 @@ Vous pouvez ajouter ces variables dans les paramètres de votre plateforme :
 ### Problèmes de mémoire
 - Les plans gratuits ont des limites de RAM
 - Réduisez la qualité de téléchargement si nécessaire
+

@@ -3,12 +3,19 @@
 FROM node:20-slim
 
 # Installer les dépendances système nécessaires
-# yt-dlp est disponible directement via apt dans Debian/Ubuntu
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
-    yt-dlp \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Installer yt-dlp via pip pour avoir la version la plus récente
+# Cette méthode est plus fiable que apt qui peut avoir des versions anciennes
+RUN pip3 install --no-cache-dir --upgrade yt-dlp
+
+# S'assurer que yt-dlp est dans le PATH (pip installe souvent dans ~/.local/bin)
+ENV PATH="${PATH}:/root/.local/bin:/usr/local/bin"
 
 # Vérifier les installations
 RUN yt-dlp --version && ffmpeg -version
