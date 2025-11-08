@@ -6,16 +6,13 @@ FROM node:20-slim
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
-    python3 \
-    python3-pip \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Installer yt-dlp via pip pour avoir la version la plus récente
-# Cette méthode est plus fiable que apt qui peut avoir des versions anciennes
-RUN pip3 install --no-cache-dir --upgrade yt-dlp
-
-# S'assurer que yt-dlp est dans le PATH (pip installe souvent dans ~/.local/bin)
-ENV PATH="${PATH}:/root/.local/bin:/usr/local/bin"
+# Installer yt-dlp via le script officiel (méthode recommandée)
+# Cela évite les problèmes avec pip et les environnements gérés
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp
 
 # Vérifier les installations
 RUN yt-dlp --version && ffmpeg -version
