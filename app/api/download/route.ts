@@ -828,13 +828,16 @@ export async function POST(request: NextRequest) {
             },
           });
         } catch (error: any) {
-          console.warn(`⚠️ Client ${client} a échoué:`, error.message?.substring(0, 100));
+          const errorMsg = error.message || String(error);
+          console.warn(`⚠️ Client ${client} a échoué:`, errorMsg.substring(0, 200));
           lastError = error;
+          // Continuer avec le client suivant
           continue;
         }
       }
       
-      console.warn('⚠️ Tous les clients yt-dlp ont échoué, utilisation de ytdl-core comme fallback...');
+      console.warn('⚠️ Tous les clients yt-dlp ont échoué');
+      console.log('📦 Passage au fallback ytdl-core pour l\'audio...');
     }
     
     // Fallback vers ytdl-core pour l'audio (fonctionne souvent même sans tokens PO)
