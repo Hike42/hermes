@@ -808,8 +808,12 @@ export async function POST(request: NextRequest) {
         
         // Le nom de fichier est déjà nettoyé, s'assurer que l'extension est correcte
         let safeFileName = fileName;
-        if (safeFileName.endsWith(`.${format}_`)) {
+        if (safeFileName.endsWith(`.mp3_`)) {
           safeFileName = safeFileName.slice(0, -1);
+        }
+        // S'assurer que le fichier a l'extension .mp3
+        if (!safeFileName.endsWith('.mp3')) {
+          safeFileName = safeFileName.replace(/\.[^.]*$/, '') + '.mp3';
         }
         
         // Nettoyer les caractères spéciaux pour l'en-tête HTTP (garder les espaces et caractères normaux)
@@ -837,10 +841,6 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
-
-    // Code MP4 désactivé - MP3 uniquement
-    if (false && format === 'mp4') {
-      console.log('🎬 Format MP4 demandé');
       
       // Chercher d'abord un format combiné (vidéo + audio) en MP4
       let formats = ytdl.filterFormats(info.formats, (format) => {
