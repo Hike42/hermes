@@ -279,6 +279,7 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   console.log(`📝 Nom de fichier final: ${finalFileName}`);
   console.log(`🎯 Qualité sélectionnée: ${quality || 'best'}`);
   console.log(`🌐 Client YouTube utilisé: ${playerClient}`);
+  console.log(`💡 Le client iOS est généralement plus fiable pour les formats haute qualité (basé sur l'analyse de Cobalt)`);
   
   // Récupérer les formats disponibles AVANT de télécharger
   console.log('🔍 Récupération des formats disponibles avec le client', playerClient, '...');
@@ -512,8 +513,9 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
         // Utiliser une syntaxe simplifiée qui peut mieux fonctionner
         // Essayer d'abord les formats combinés (plus rapides), puis vidéo+audio séparés
         console.log('🎯 Utilisation d\'une syntaxe yt-dlp TRÈS agressive pour forcer l\'accès aux formats haute qualité');
+        console.log('💡 Basé sur l\'analyse de Cobalt: priorité aux formats combinés (plus rapides), puis vidéo+audio séparés');
         args.push('-f', 
-          // 1. Formats combinés 1080p (préférés - plus rapides)
+          // 1. Formats combinés 1080p (préférés - plus rapides, comme Cobalt)
           'best[height>=1080]/' +
           'bestvideo[height>=1080]+bestaudio/' +
           // 2. Formats combinés 720p
@@ -700,8 +702,9 @@ export async function POST(request: NextRequest) {
         let filePath: string, fileName: string;
         
         // Liste des clients à essayer dans l'ordre de préférence
-        // Android en premier car c'est souvent le plus fiable actuellement
-        const clients = ['android', 'tv', 'ios', 'web'];
+        // iOS en premier car c'est souvent le plus fiable (pas besoin de déchiffrement pour certains formats)
+        // Basé sur l'analyse de Cobalt qui utilise IOS par défaut
+        const clients = ['ios', 'android', 'tv', 'web'];
         let lastError: Error | null = null;
         let downloadResult: { filePath: string; fileName: string } | null = null;
         
