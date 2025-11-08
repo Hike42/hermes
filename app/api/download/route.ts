@@ -762,70 +762,191 @@ export async function POST(request: NextRequest) {
     const ytDlpAvailable = await isYtDlpAvailable();
     console.log('🔧 yt-dlp disponible:', ytDlpAvailable);
     
-    if (!ytDlpAvailable) {
+    const videoTitle = info.videoDetails.title;
+    let downloadSuccess = false;
+    
+    // Essayer yt-dlp avec plusieurs clients si disponible
+    if (ytDlpAvailable) {
+      console.log('📦 Tentative de téléchargement audio avec yt-dlp...');
+      
+      // Essayer plusieurs clients dans l'ordre : web, android, ios
+      // Le client 'web' est souvent le plus compatible sans tokens PO
+      const clients = ['web', 'android', 'ios'];
+      let lastError: Error | null = null;
+      
+      for (const client of clients) {
+        try {
+          console.log(`🔄 Tentative avec le client ${client}...`);
+          
+          const downloadResult = await downloadWithYtDlp(
+            url, 
+            audioFormat, 
+            tempDir, 
+            videoTitle, 
+            audioQuality, 
+            client
+          );
+          
+          const filePath = downloadResult.filePath;
+          const fileName = downloadResult.fileName;
+          console.log('✅ Fichier audio téléchargé:', fileName);
+          
+          // Attendre un peu pour s'assurer que le fichier est complètement écrit
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          if (!fs.existsSync(filePath)) {
+            throw new Error('Le fichier téléchargé n\'existe pas');
+          }
+          
+          const fileBuffer = fs.readFileSync(filePath);
+          const fileSize = fileBuffer.length;
+          console.log(`✅ Fichier lu: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+          
+          // Nettoyer le fichier temporaire
+          fs.unlinkSync(filePath);
+          
+          console.log('✅ Téléchargement terminé avec yt-dlp (client ' + client + ')');
+          
+          // Le nom de fichier est déjà nettoyé, s'assurer que l'extension est correcte
+          let safeFileName = fileName;
+          if (safeFileName.endsWith(`.mp3_`)) {
+            safeFileName = safeFileName.slice(0, -1);
+          }
+          // S'assurer que le fichier a l'extension .mp3
+          if (!safeFileName.endsWith('.mp3')) {
+            safeFileName = safeFileName.replace(/\.[^.]*$/, '') + '.mp3';
+          }
+          
+          // Nettoyer les caractères spéciaux pour l'en-tête HTTP
+          const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_');
+          
+          downloadSuccess = true;
+          return new NextResponse(fileBuffer, {
+            headers: {
+              'Content-Type': 'audio/mpeg',
+              'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+            },
+          });
+        } catch (error: any) {
+          console.warn(`⚠️ Client ${client} a échoué:`, error.message?.substring(0, 100));
+          lastError = error;
+          continue;
+        }
+      }
+      
+      console.warn('⚠️ Tous les clients yt-dlp ont échoué, utilisation de ytdl-core comme fallback...');
+    }
+    
+    // Fallback vers ytdl-core pour l'audio (fonctionne souvent même sans tokens PO)
+    console.log('📦 Téléchargement audio avec ytdl-core (fallback)...');
+    console.log('🎵 Format MP3 demandé');
+    
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+    console.log(`📊 Formats audio disponibles: ${audioFormats.length}`);
+
+    if (audioFormats.length === 0) {
+      console.error('❌ Aucun format audio disponible');
       return NextResponse.json(
-        { error: 'yt-dlp non disponible. Veuillez installer yt-dlp.' },
-        { status: 500 }
+        { error: 'Format audio non disponible' },
+        { status: 400 }
       );
     }
 
-    console.log('📦 Téléchargement audio avec yt-dlp...');
-    const videoTitle = info.videoDetails.title;
-    
-    // Utiliser le client iOS (le plus fiable pour l'audio selon Cobalt)
-    const client = 'ios';
-    console.log(`🔄 Téléchargement avec le client ${client}...`);
-    
-    const downloadResult = await downloadWithYtDlp(
-      url, 
-      audioFormat, 
-      tempDir, 
-      videoTitle, 
-      audioQuality, 
-      client
-    );
-    
-    const filePath = downloadResult.filePath;
-    const fileName = downloadResult.fileName;
-    console.log('✅ Fichier audio téléchargé:', fileName);
-    
-    // Attendre un peu pour s'assurer que le fichier est complètement écrit
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    if (!fs.existsSync(filePath)) {
-      throw new Error('Le fichier téléchargé n\'existe pas');
+    const bestAudioFormat = audioFormats.find(f => f.hasAudio) || audioFormats[0];
+    console.log('✅ Format audio sélectionné:', bestAudioFormat.container, bestAudioFormat.audioBitrate);
+    const audioPath = path.join(tempDir, `${title}_audio.${bestAudioFormat.container}`);
+    const outputPath = path.join(tempDir, `${title}.mp3`);
+
+    try {
+      console.log('📥 Début du téléchargement audio...');
+      const audioStream = ytdl.downloadFromInfo(info, { format: bestAudioFormat });
+      const audioWriteStream = fs.createWriteStream(audioPath);
+      
+      // Gestion des erreurs du stream
+      let streamError: Error | null = null;
+      audioStream.on('error', (error: any) => {
+        console.error('❌ Erreur du stream audio:', error);
+        streamError = error;
+        audioWriteStream.destroy();
+      });
+      
+      audioStream.pipe(audioWriteStream);
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          console.error('❌ Timeout du téléchargement audio');
+          audioStream.destroy();
+          audioWriteStream.destroy();
+          reject(new Error('Timeout: le téléchargement audio a pris trop de temps'));
+        }, 300000); // 5 minutes
+
+        audioWriteStream.on('finish', () => {
+          clearTimeout(timeout);
+          if (streamError) {
+            reject(streamError);
+            return;
+          }
+          console.log('✅ Stream audio terminé');
+          resolve();
+        });
+        audioWriteStream.on('error', (error) => {
+          clearTimeout(timeout);
+          console.error('❌ Erreur du writeStream audio:', error);
+          reject(error);
+        });
+      }).catch((error) => {
+        // Vérifier si c'est une erreur 403
+        if (streamError && (streamError as any).statusCode === 403) {
+          throw new Error('YouTube bloque l\'accès (403). Les formats audio nécessitent peut-être des tokens PO.');
+        }
+        if ((error as any).statusCode === 403 || error.message?.includes('403')) {
+          throw new Error('YouTube bloque l\'accès (403). Les formats audio nécessitent peut-être des tokens PO.');
+        }
+        throw error;
+      });
+
+      // Essayer de convertir en MP3 avec ffmpeg
+      try {
+        console.log('🔄 Conversion en MP3 avec ffmpeg...');
+        await execAsync(
+          `ffmpeg -i "${audioPath}" -acodec libmp3lame -ab 192k "${outputPath}" -y`
+        );
+        const fileBuffer = fs.readFileSync(outputPath);
+        fs.unlinkSync(audioPath);
+        fs.unlinkSync(outputPath);
+        console.log('✅ Conversion MP3 réussie');
+
+        const safeFileName = `${title}.mp3`;
+        const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_');
+
+        return new NextResponse(fileBuffer, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+          },
+        });
+      } catch (ffmpegError) {
+        console.warn('⚠️ ffmpeg non disponible, retour de l\'audio original');
+        // Si ffmpeg n'est pas disponible, retourner l'audio original
+        const fileBuffer = fs.readFileSync(audioPath);
+        fs.unlinkSync(audioPath);
+
+        const safeFileName = `${title}.${bestAudioFormat.container}`;
+        const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_');
+
+        return new NextResponse(fileBuffer, {
+          headers: {
+            'Content-Type': bestAudioFormat.container === 'webm' ? 'audio/webm' : 'audio/mpeg',
+            'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+          },
+        });
+      }
+    } catch (error) {
+      [audioPath, outputPath].forEach(file => {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      });
+      throw error;
     }
-    
-    const fileBuffer = fs.readFileSync(filePath);
-    const fileSize = fileBuffer.length;
-    console.log(`✅ Fichier lu: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
-    
-    // Nettoyer le fichier temporaire
-    fs.unlinkSync(filePath);
-    
-    console.log('✅ Téléchargement terminé avec yt-dlp');
-    
-    // Le nom de fichier est déjà nettoyé, s'assurer que l'extension est correcte
-    let safeFileName = fileName;
-    if (safeFileName.endsWith(`.mp3_`)) {
-      safeFileName = safeFileName.slice(0, -1);
-    }
-    // S'assurer que le fichier a l'extension .mp3
-    if (!safeFileName.endsWith('.mp3')) {
-      safeFileName = safeFileName.replace(/\.[^.]*$/, '') + '.mp3';
-    }
-    
-    // Nettoyer les caractères spéciaux pour l'en-tête HTTP (garder les espaces et caractères normaux)
-    // Utiliser un format compatible avec tous les navigateurs
-    const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_'); // Garder seulement ASCII imprimable
-    
-    return new NextResponse(fileBuffer, {
-      headers: {
-        'Content-Type': 'audio/mpeg', // MP3 uniquement
-        // Utiliser les deux formats : simple (pour compatibilité) et UTF-8 (pour caractères spéciaux)
-        'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
-      },
-    });
   } catch (error) {
     console.error('❌ Erreur lors du téléchargement:', error);
     
