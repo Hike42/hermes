@@ -285,7 +285,9 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   let availableFormats: any[] = [];
   let videoInfo: any = null;
   let formatsRetrieved = false;
+  
   try {
+    // Essayer d'abord avec --dump-json
     const { stdout } = await execAsync(
       `"${ytDlpPath}" --dump-json --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${urlOnly}"`,
       { timeout: 30000 }
@@ -294,13 +296,49 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     availableFormats = videoInfo.formats || [];
     formatsRetrieved = availableFormats.length > 0;
     if (formatsRetrieved) {
-      console.log(`✅ ${availableFormats.length} formats disponibles`);
+      console.log(`✅ ${availableFormats.length} formats disponibles avec --dump-json`);
     } else {
       console.warn('⚠️ Aucun format disponible dans la réponse JSON');
     }
   } catch (error: any) {
-    console.warn('⚠️ Impossible de récupérer les formats disponibles avec --dump-json');
-    // Ne pas abandonner, on utilisera une syntaxe stricte dans les arguments yt-dlp
+    console.warn('⚠️ Impossible de récupérer les formats avec --dump-json');
+  }
+  
+  // Si peu de formats ou seulement basse qualité, essayer aussi --list-formats pour voir tous les formats
+  // (y compris ceux qui nécessitent des tokens PO mais qui peuvent être disponibles)
+  if (!formatsRetrieved || availableFormats.length < 10) {
+    try {
+      console.log('🔍 Tentative de liste complète des formats avec --list-formats...');
+      const { stdout: listStdout } = await execAsync(
+        `"${ytDlpPath}" --list-formats --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${urlOnly}"`,
+        { timeout: 30000 }
+      );
+      // Parser la sortie de --list-formats pour extraire les IDs de formats
+      // Format typique: "ID  EXT   RESOLUTION  FPS │ FILESIZE   TBR PROTO │ VCODEC  VBR ACODEC      ABR"
+      const formatLines = listStdout.split('\n').filter((line: string) => {
+        // Chercher les lignes qui contiennent des IDs de formats (commencent par des chiffres)
+        return /^\s*\d+\s+/.test(line) && (line.includes('video') || line.includes('audio') || line.includes('mp4') || line.includes('webm'));
+      });
+      
+      if (formatLines.length > availableFormats.length) {
+        console.log(`📊 ${formatLines.length} formats trouvés avec --list-formats (plus que les ${availableFormats.length} avec --dump-json)`);
+        // Extraire les IDs de formats depuis --list-formats
+        const formatIds = formatLines.map((line: string) => {
+          const match = line.match(/^\s*(\d+)/);
+          return match ? match[1] : null;
+        }).filter((id: string | null) => id !== null);
+        
+        console.log(`📋 IDs de formats disponibles: ${formatIds.slice(0, 20).join(', ')}...`);
+        
+        // Si on a des formats dans --dump-json, les compléter avec ceux de --list-formats
+        // Sinon, on utilisera une stratégie différente
+        if (formatIds.length > availableFormats.length) {
+          console.log('⚠️ Plus de formats disponibles avec --list-formats qu\'avec --dump-json - YouTube peut bloquer certains formats');
+        }
+      }
+    } catch (listError) {
+      console.warn('⚠️ Impossible de lister les formats avec --list-formats');
+    }
   }
   
   // Si "best" est sélectionné, trouver le meilleur format disponible
