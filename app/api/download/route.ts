@@ -175,10 +175,14 @@ export async function POST(request: NextRequest) {
               console.error('stderr:', stderr.substring(0, 500));
               
               // Si yt-dlp échoue, essayer avec ytdl-core comme fallback
-              console.log('📦 Passage au fallback ytdl-core...');
-              downloadWithYtdlCore(info, tempDir, title, videoTitle)
-                .then(result => resolve(result))
-                .catch(error => reject(error));
+              if (tempDir) {
+                console.log('📦 Passage au fallback ytdl-core...');
+                downloadWithYtdlCore(info, tempDir, title, videoTitle)
+                  .then(result => resolve(result))
+                  .catch(error => reject(error));
+              } else {
+                reject(new Error('yt-dlp a échoué et tempDir est null'));
+              }
               return;
             }
 
@@ -243,9 +247,13 @@ export async function POST(request: NextRequest) {
           ytDlpProcess.on('error', (error: Error) => {
             console.error('❌ Erreur lors du lancement de yt-dlp:', error);
             // Fallback vers ytdl-core
-            downloadWithYtdlCore(info, tempDir, title, videoTitle)
-              .then(result => resolve(result))
-              .catch(err => reject(err));
+            if (tempDir) {
+              downloadWithYtdlCore(info, tempDir, title, videoTitle)
+                .then(result => resolve(result))
+                .catch(err => reject(err));
+            } else {
+              reject(new Error('Erreur avec yt-dlp et tempDir est null'));
+            }
           });
 
           // Timeout de 10 minutes
