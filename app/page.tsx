@@ -14,13 +14,13 @@ interface VideoInfo {
 
 export default function Home() {
   const [url, setUrl] = useState('');
-  const [format, setFormat] = useState<'mp3' | 'mp4'>('mp4');
+  const [format] = useState<'mp3'>('mp3'); // Uniquement MP3
   const [loading, setLoading] = useState(false);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState(0);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
-  const [selectedQuality, setSelectedQuality] = useState<string>('best');
+  const [selectedQuality] = useState<string>('best'); // Toujours meilleure qualité pour audio
 
   const validateYouTubeUrl = (url: string): boolean => {
     const pattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
@@ -53,13 +53,6 @@ export default function Home() {
 
       const info = await response.json();
       setVideoInfo(info);
-      
-      // Sélectionner la meilleure qualité par défaut
-      if (format === 'mp3' && info.audioFormats && info.audioFormats.length > 0) {
-        setSelectedQuality('best');
-      } else if (format === 'mp4' && info.videoFormats && info.videoFormats.length > 0) {
-        setSelectedQuality('best');
-      }
     } catch (err) {
       console.error('Erreur:', err);
       setVideoInfo(null);
@@ -69,7 +62,7 @@ export default function Home() {
     } finally {
       setLoadingInfo(false);
     }
-  }, [format]);
+  }, []);
 
   // Debounce pour récupérer les infos
   useEffect(() => {
@@ -84,16 +77,6 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [url, fetchVideoInfo]);
 
-  // Réinitialiser les qualités quand le format change
-  useEffect(() => {
-    if (videoInfo) {
-      if (format === 'mp3' && videoInfo.audioFormats && videoInfo.audioFormats.length > 0) {
-        setSelectedQuality('best');
-      } else if (format === 'mp4' && videoInfo.videoFormats && videoInfo.videoFormats.length > 0) {
-        setSelectedQuality('best');
-      }
-    }
-  }, [format, videoInfo]);
 
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -138,7 +121,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ url, format, quality: selectedQuality }),
+        body: JSON.stringify({ url, format: 'mp3', quality: 'best' }),
         signal: controller.signal,
       });
 
@@ -193,9 +176,6 @@ export default function Home() {
     }
   };
 
-  const availableQualities = format === 'mp3' 
-    ? videoInfo?.audioFormats 
-    : videoInfo?.videoFormats;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
@@ -206,7 +186,7 @@ export default function Home() {
               YouTube Downloader
             </h1>
             <p className="text-slate-600 dark:text-slate-400 text-lg">
-              Téléchargez vos vidéos YouTube en MP3 ou MP4
+              Téléchargez vos vidéos YouTube en MP3 (Audio uniquement)
             </p>
           </div>
 
@@ -265,76 +245,24 @@ export default function Home() {
               </div>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
-                Format
-              </label>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setFormat('mp4')}
-                  disabled={loading}
-                  className={`flex-1 py-3 px-6 rounded-lg font-medium transition-all ${
-                    format === 'mp4'
-                      ? 'bg-blue-600 text-white shadow-lg scale-105'
-                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
-                  } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  MP4 (Vidéo)
-                </button>
-                <button
-                  onClick={() => setFormat('mp3')}
-                  disabled={loading}
-                  className={`flex-1 py-3 px-6 rounded-lg font-medium transition-all ${
-                    format === 'mp3'
-                      ? 'bg-blue-600 text-white shadow-lg scale-105'
-                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
-                  } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  MP3 (Audio)
-                </button>
-              </div>
-            </div>
-
-            {/* Sélecteur de qualité */}
-            {videoInfo && availableQualities && availableQualities.length > 0 && (
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
-                  Qualité {format === 'mp3' ? 'audio' : 'vidéo'}
-                </label>
-                <div className="space-y-2">
-                  <button
-                    onClick={() => setSelectedQuality('best')}
-                    disabled={loading}
-                    className={`w-full py-2.5 px-4 rounded-lg text-sm font-medium transition-all text-left ${
-                      selectedQuality === 'best'
-                        ? 'bg-blue-600 text-white shadow-md border-2 border-blue-700'
-                        : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 border-2 border-transparent'
-                    } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    <span className="font-semibold">⭐ Meilleure qualité</span>
-                    <span className="block text-xs mt-0.5 opacity-90">
-                      {format === 'mp3' ? 'Audio de meilleure qualité disponible' : 'Vidéo de meilleure qualité disponible'}
-                    </span>
-                  </button>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1">
-                    {availableQualities.slice(0, 8).map((quality) => (
-                      <button
-                        key={quality.id}
-                        onClick={() => setSelectedQuality(quality.id)}
-                        disabled={loading}
-                        className={`py-2 px-3 rounded-lg text-sm font-medium transition-all ${
-                          selectedQuality === quality.id
-                            ? 'bg-blue-600 text-white shadow-md border-2 border-blue-700'
-                            : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 border-2 border-transparent'
-                        } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      >
-                        {quality.quality}
-                      </button>
-                    ))}
-                  </div>
+            {/* Format MP3 uniquement - affichage informatif */}
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex-shrink-0">
+                  <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                    Format: MP3 (Audio uniquement)
+                  </p>
+                  <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                    Meilleure qualité audio disponible
+                  </p>
                 </div>
               </div>
-            )}
+            </div>
 
             {error && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded-lg">

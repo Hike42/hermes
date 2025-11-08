@@ -714,13 +714,19 @@ export async function POST(request: NextRequest) {
 
     console.log('📥 Début du téléchargement:', { url, format, quality });
 
-    if (!url || !format) {
-      console.error('❌ Paramètres manquants');
+    if (!url) {
+      console.error('❌ URL manquante');
       return NextResponse.json(
-        { error: 'URL et format requis' },
+        { error: 'URL requise' },
         { status: 400 }
       );
     }
+
+    // Forcer le format MP3 uniquement
+    const audioFormat: 'mp3' = 'mp3';
+    const audioQuality = 'best';
+
+    console.log('🎵 Téléchargement audio uniquement (MP3)');
 
     if (!ytdl.validateURL(url)) {
       console.error('❌ URL invalide:', url);
@@ -752,61 +758,40 @@ export async function POST(request: NextRequest) {
 
     const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').substring(0, 50);
 
-    // Essayer d'utiliser yt-dlp en premier (plus fiable)
+    // Utiliser yt-dlp pour télécharger l'audio (MP3 uniquement)
     const ytDlpAvailable = await isYtDlpAvailable();
     console.log('🔧 yt-dlp disponible:', ytDlpAvailable);
     
-    if (ytDlpAvailable) {
-      try {
-        console.log('📦 Utilisation de yt-dlp...');
-        const videoTitle = info.videoDetails.title;
-        let filePath: string, fileName: string;
-        
-        // Liste des clients à essayer dans l'ordre de préférence
-        // iOS en premier car c'est souvent le plus fiable (pas besoin de déchiffrement pour certains formats)
-        // Basé sur l'analyse de Cobalt qui utilise IOS par défaut
-        const clients = ['ios', 'android', 'tv', 'web'];
-        let lastError: Error | null = null;
-        let downloadResult: { filePath: string; fileName: string } | null = null;
-        
-        for (const client of clients) {
-          try {
-            console.log(`🔄 Tentative avec le client ${client}...`);
-            downloadResult = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, client);
-            console.log(`✅ Succès avec le client ${client}`);
-            break;
-          } catch (error: any) {
-            // Si le format n'est pas disponible, essayer avec "best" pour ce client
-            if (error.message === 'FORMAT_NOT_AVAILABLE' && quality && quality !== 'best') {
-              console.warn(`⚠️ Format ${quality} non disponible avec ${client}, tentative avec meilleur format disponible...`);
-              try {
-                downloadResult = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', client);
-                console.log(`✅ Succès avec le client ${client} (format automatique)`);
-                break;
-              } catch (fallbackError: any) {
-                console.warn(`⚠️ Client ${client} a échoué même avec format automatique: ${fallbackError.message?.substring(0, 100)}`);
-                lastError = fallbackError;
-                continue;
-              }
-            } else {
-              console.warn(`⚠️ Client ${client} a échoué: ${error.message?.substring(0, 100)}`);
-              lastError = error;
-              // Continuer avec le client suivant
-              continue;
-            }
-          }
-        }
-        
-        if (!downloadResult) {
-          throw lastError || new Error('Tous les clients YouTube ont échoué');
-        }
-        
-        filePath = downloadResult.filePath;
-        fileName = downloadResult.fileName;
-        console.log('✅ Fichier téléchargé:', fileName);
-        
-        // Attendre un peu pour s'assurer que le fichier est complètement écrit
-        await new Promise(resolve => setTimeout(resolve, 500));
+    if (!ytDlpAvailable) {
+      return NextResponse.json(
+        { error: 'yt-dlp non disponible. Veuillez installer yt-dlp.' },
+        { status: 500 }
+      );
+    }
+
+    try {
+      console.log('📦 Téléchargement audio avec yt-dlp...');
+      const videoTitle = info.videoDetails.title;
+      
+      // Utiliser le client iOS (le plus fiable pour l'audio selon Cobalt)
+      const client = 'ios';
+      console.log(`🔄 Téléchargement avec le client ${client}...`);
+      
+      const downloadResult = await downloadWithYtDlp(
+        url, 
+        audioFormat, 
+        tempDir, 
+        videoTitle, 
+        audioQuality, 
+        client
+      );
+      
+      const filePath = downloadResult.filePath;
+      const fileName = downloadResult.fileName;
+      console.log('✅ Fichier audio téléchargé:', fileName);
+      
+      // Attendre un peu pour s'assurer que le fichier est complètement écrit
+      await new Promise(resolve => setTimeout(resolve, 500));
         
         if (!fs.existsSync(filePath)) {
           throw new Error('Le fichier téléchargé n\'existe pas');
@@ -833,21 +818,28 @@ export async function POST(request: NextRequest) {
         
         return new NextResponse(fileBuffer, {
           headers: {
-            'Content-Type': format === 'mp3' ? 'audio/mpeg' : 'video/mp4',
+            'Content-Type': 'audio/mpeg', // MP3 uniquement
             // Utiliser les deux formats : simple (pour compatibilité) et UTF-8 (pour caractères spéciaux)
             'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
           },
         });
       } catch (error) {
-        console.error('❌ Erreur avec yt-dlp, utilisation de ytdl-core:', error);
-        // Continuer avec ytdl-core
+        console.error('❌ Erreur avec yt-dlp:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Erreur inconnue';
+        return NextResponse.json(
+          { error: `Erreur lors du téléchargement audio: ${errorMessage}` },
+          { status: 500 }
+        );
       }
+    } else {
+      return NextResponse.json(
+        { error: 'yt-dlp est requis pour télécharger l\'audio. Veuillez installer yt-dlp.' },
+        { status: 500 }
+      );
     }
 
-    // Fallback sur ytdl-core
-    console.log('📦 Utilisation de ytdl-core...');
-
-    if (format === 'mp4') {
+    // Code MP4 désactivé - MP3 uniquement
+    if (false && format === 'mp4') {
       console.log('🎬 Format MP4 demandé');
       
       // Chercher d'abord un format combiné (vidéo + audio) en MP4
