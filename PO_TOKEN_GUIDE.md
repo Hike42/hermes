@@ -11,17 +11,20 @@ Les tokens PO (Proof of Origin) sont des paramètres que YouTube exige pour acc�
 **Description** : Service Docker qui génère automatiquement des tokens PO et `visitor_data`.
 
 **Avantages** :
+
 - Génération automatique et continue
 - Service dédié qui se met à jour automatiquement
 - Utilisé par Cobalt (bien testé)
 
 **Inconvénients** :
+
 - Nécessite Docker
 - Nécessite un service séparé à maintenir
 
 **Installation** :
 
 1. Ajouter le service dans `docker-compose.yml` :
+
 ```yaml
 services:
   yt-session-generator:
@@ -34,6 +37,7 @@ services:
 ```
 
 2. Le service expose une API sur `http://localhost:8080/token` qui retourne :
+
 ```json
 {
   "potoken": "votre_po_token_ici",
@@ -43,13 +47,14 @@ services:
 ```
 
 3. Utiliser dans notre code :
+
 ```typescript
 // Récupérer le token depuis le service
-const response = await fetch('http://localhost:8080/token');
+const response = await fetch("http://localhost:8080/token");
 const { potoken, visitor_data } = await response.json();
 
 // Utiliser avec yt-dlp
-// Note: yt-dlp ne supporte pas directement visitor_data, 
+// Note: yt-dlp ne supporte pas directement visitor_data,
 // mais on peut utiliser le po_token
 ```
 
@@ -58,11 +63,13 @@ const { potoken, visitor_data } = await response.json();
 **Description** : Package Node.js qui génère des tokens PO sans navigateur réel.
 
 **Avantages** :
+
 - Simple à utiliser
 - Pas besoin de Docker
 - Intégration facile dans Node.js
 
 **Inconvénients** :
+
 - Nécessite une dépendance supplémentaire
 - Peut nécessiter des mises à jour régulières
 
@@ -75,7 +82,7 @@ npm install youtube-po-token-generator
 **Utilisation** :
 
 ```typescript
-import { generateToken } from 'youtube-po-token-generator';
+import { generateToken } from "youtube-po-token-generator";
 
 // Générer un token
 const { visitorData, poToken } = await generateToken();
@@ -89,10 +96,12 @@ const { visitorData, poToken } = await generateToken();
 **Description** : Extraire le token PO depuis les requêtes réseau du navigateur.
 
 **Avantages** :
+
 - Pas de dépendance externe
 - Contrôle total
 
 **Inconvénients** :
+
 - Manuelle (pas automatisée)
 - Nécessite de renouveler régulièrement
 - Complexe
@@ -117,10 +126,12 @@ yt-dlp --extractor-args "youtube:player_client=android;po_token=android.gvs+VOTR
 **Description** : Script Python qui génère les tokens PO.
 
 **Avantages** :
+
 - Génération automatique
 - Peut être exécuté via Docker
 
 **Inconvénients** :
+
 - Nécessite Python ou Docker
 - Nécessite Chromium/Chrome
 
@@ -141,16 +152,19 @@ youtube-trusted-session-generator
 Une fois que vous avez un token PO, vous pouvez l'utiliser avec yt-dlp :
 
 ### Pour le client Android :
+
 ```bash
 yt-dlp --extractor-args "youtube:player_client=android;po_token=android.gvs+VOTRE_PO_TOKEN" URL_VIDEO
 ```
 
 ### Pour le client Web :
+
 ```bash
 yt-dlp --extractor-args "youtube:player_client=web;po_token=VOTRE_PO_TOKEN" URL_VIDEO
 ```
 
 ### Pour le client iOS :
+
 ```bash
 yt-dlp --extractor-args "youtube:player_client=ios;po_token=VOTRE_PO_TOKEN" URL_VIDEO
 ```
@@ -162,11 +176,11 @@ yt-dlp --extractor-args "youtube:player_client=ios;po_token=VOTRE_PO_TOKEN" URL_
 ```typescript
 async function getPoToken(): Promise<string | null> {
   try {
-    const response = await fetch('http://localhost:8080/token');
+    const response = await fetch("http://localhost:8080/token");
     const data = await response.json();
     return data.potoken || null;
   } catch (error) {
-    console.warn('⚠️ Impossible de récupérer le token PO:', error);
+    console.warn("⚠️ Impossible de récupérer le token PO:", error);
     return null;
   }
 }
@@ -174,23 +188,26 @@ async function getPoToken(): Promise<string | null> {
 // Dans downloadWithYtDlp
 const poToken = await getPoToken();
 if (poToken) {
-  args.push('--extractor-args', `youtube:player_client=${playerClient};po_token=${poToken}`);
+  args.push(
+    "--extractor-args",
+    `youtube:player_client=${playerClient};po_token=${poToken}`
+  );
 } else {
-  args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  args.push("--extractor-args", `youtube:player_client=${playerClient}`);
 }
 ```
 
 ### Option 2 : Package NPM (youtube-po-token-generator)
 
 ```typescript
-import { generateToken } from 'youtube-po-token-generator';
+import { generateToken } from "youtube-po-token-generator";
 
 async function getPoToken(): Promise<string | null> {
   try {
     const { poToken } = await generateToken();
     return poToken || null;
   } catch (error) {
-    console.warn('⚠️ Impossible de générer le token PO:', error);
+    console.warn("⚠️ Impossible de générer le token PO:", error);
     return null;
   }
 }
@@ -199,11 +216,13 @@ async function getPoToken(): Promise<string | null> {
 ## Recommandations
 
 1. **Pour la production** : Utiliser `yt-session-generator` (service Docker)
+
    - Plus fiable
    - Génération automatique
    - Mise à jour continue
 
 2. **Pour le développement** : Utiliser `youtube-po-token-generator` (NPM)
+
    - Plus simple à configurer
    - Pas besoin de Docker
    - Facile à tester
@@ -224,4 +243,3 @@ async function getPoToken(): Promise<string | null> {
 - [yt-session-generator GitHub](https://github.com/imputnet/yt-session-generator)
 - [youtube-po-token-generator NPM](https://www.npmjs.com/package/youtube-po-token-generator)
 - [youtube-trusted-session-generator PyPI](https://pypi.org/project/youtube-trusted-session-generator/)
-

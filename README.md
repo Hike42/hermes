@@ -17,20 +17,22 @@ Outil moderne et minimaliste pour télécharger des vidéos YouTube au format MP
 
 ## 📋 Prérequis
 
-- Node.js 18+ 
+- Node.js 18+
 - npm ou yarn
-- **Optionnel mais recommandé** : 
+- **Optionnel mais recommandé** :
   - [yt-dlp](https://github.com/yt-dlp/yt-dlp) pour une meilleure compatibilité
   - [ffmpeg](https://ffmpeg.org/) pour la conversion MP3 et la fusion audio/vidéo
 
 ### Installation de yt-dlp (recommandé)
 
 **macOS :**
+
 ```bash
 brew install yt-dlp
 ```
 
 **Linux :**
+
 ```bash
 pip install yt-dlp
 # ou
@@ -38,6 +40,7 @@ sudo apt install yt-dlp
 ```
 
 **Windows :**
+
 ```bash
 pip install yt-dlp
 ```
@@ -45,11 +48,13 @@ pip install yt-dlp
 ### Installation de ffmpeg (optionnel)
 
 **macOS :**
+
 ```bash
 brew install ffmpeg
 ```
 
 **Linux :**
+
 ```bash
 sudo apt install ffmpeg
 ```
@@ -60,11 +65,13 @@ Téléchargez depuis [ffmpeg.org](https://ffmpeg.org/download.html)
 ## 🛠️ Installation
 
 1. Clonez le repository ou naviguez dans le dossier :
+
 ```bash
 cd youtube-downloader
 ```
 
 2. Installez les dépendances :
+
 ```bash
 npm install
 ```
@@ -72,6 +79,7 @@ npm install
 ## 🎯 Utilisation
 
 1. Lancez le serveur de développement :
+
 ```bash
 npm run dev
 ```
@@ -79,6 +87,7 @@ npm run dev
 2. Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur
 
 3. Collez l'URL de la vidéo YouTube que vous souhaitez télécharger
+
    - Les informations de la vidéo s'afficheront automatiquement après quelques secondes
 
 4. Choisissez le format (MP3 ou MP4)
@@ -137,6 +146,7 @@ npm start
 Si le téléchargement reste bloqué ou ne fonctionne pas :
 
 1. **Vérifiez les logs du serveur** : Le serveur affiche des logs détaillés dans la console avec des emojis pour suivre le processus :
+
    - 📥 Début du téléchargement
    - 📋 Récupération des informations
    - 📦 Utilisation de ytdl-core/yt-dlp
@@ -144,16 +154,19 @@ Si le téléchargement reste bloqué ou ne fonctionne pas :
    - ❌ Erreurs
 
 2. **Vérifiez que yt-dlp est installé** (recommandé) :
+
    ```bash
    yt-dlp --version
    ```
 
 3. **Vérifiez que ffmpeg est installé** (pour MP3) :
+
    ```bash
    ffmpeg -version
    ```
 
 4. **Timeouts** :
+
    - Le téléchargement a un timeout de 5 minutes côté serveur
    - Le client a un timeout de 6 minutes
    - Pour les très longues vidéos, cela peut échouer

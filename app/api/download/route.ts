@@ -2,15 +2,45 @@ import { NextRequest, NextResponse } from 'next/server';
 import ytdl from '@distube/ytdl-core';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import { promisify } from 'util';
+import { exec } from 'child_process';
 
 const execAsync = promisify(exec);
 
+// Fonction pour vérifier si yt-dlp est disponible
+async function isYtDlpAvailable(): Promise<boolean> {
+  try {
+    await execAsync('yt-dlp --version');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Fonction pour trouver le chemin de yt-dlp
+async function findYtDlpPath(): Promise<string | null> {
+  const possiblePaths = [
+    'yt-dlp',
+    '/usr/local/bin/yt-dlp',
+    '/usr/bin/yt-dlp',
+    path.join(process.cwd(), 'yt-dlp'),
+  ];
+
+  for (const ytDlpPath of possiblePaths) {
+    try {
+      await execAsync(`"${ytDlpPath}" --version`);
+      return ytDlpPath;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   let tempDir: string | null = null;
-  let audioPath: string | null = null;
-  let outputPath: string | null = null;
 
   try {
     const { url } = await request.json();
@@ -42,75 +72,277 @@ export async function POST(request: NextRequest) {
     const info = await ytdl.getInfo(url);
     console.log('✅ Informations récupérées:', info.videoDetails.title);
 
-    // Obtenir les formats audio disponibles
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-    console.log(`📊 ${audioFormats.length} formats audio disponibles`);
+    const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').substring(0, 50);
+    const videoTitle = info.videoDetails.title;
 
-    if (audioFormats.length === 0) {
-      return NextResponse.json(
-        { error: 'Aucun format audio disponible pour cette vidéo' },
-        { status: 400 }
-      );
+    // Essayer d'utiliser yt-dlp en premier (plus fiable)
+    const ytDlpAvailable = await isYtDlpAvailable();
+    console.log('🔧 yt-dlp disponible:', ytDlpAvailable);
+
+    if (ytDlpAvailable) {
+      try {
+        console.log('📦 Utilisation de yt-dlp pour télécharger l\'audio...');
+        const ytDlpPath = await findYtDlpPath();
+        if (!ytDlpPath) {
+          throw new Error('yt-dlp non trouvé');
+        }
+
+        // Nettoyer l'URL pour éviter de télécharger toute la playlist
+        const urlOnly = url.split('&list=')[0].split('&start_radio=')[0];
+
+        // Utiliser un nom de fichier simple avec timestamp
+        const timestamp = Date.now();
+        const outputTemplate = path.join(tempDir, `download_${timestamp}.%(ext)s`);
+
+        // Créer un nom de fichier propre
+        let cleanFileName = 'video';
+        if (videoTitle) {
+          cleanFileName = videoTitle
+            .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 100);
+        }
+        const finalFileName = `${cleanFileName}.mp3`;
+
+        console.log(`🚀 Lancement de yt-dlp pour extraire l'audio en MP3...`);
+
+        // Utiliser spawn pour avoir un meilleur contrôle
+        return new Promise((resolve, reject) => {
+          const args = [
+            '--extractor-args', 'youtube:player_client=web',
+            '--no-playlist',
+            '--progress',
+            '--newline',
+            '--no-mtime',
+            '-x', // Extraire l'audio
+            '--audio-format', 'mp3',
+            '--audio-quality', '192K',
+            '-o', outputTemplate,
+            urlOnly,
+          ];
+
+          console.log(`📋 Commande: ${ytDlpPath} ${args.join(' ')}`);
+
+          const ytDlpProcess = spawn(ytDlpPath, args, {
+            cwd: tempDir,
+            shell: false,
+            env: {
+              ...process.env,
+              PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+            },
+          });
+
+          let stdout = '';
+          let stderr = '';
+          let lastProgress = Date.now();
+
+          ytDlpProcess.stdout.on('data', (data: Buffer) => {
+            const output = data.toString();
+            stdout += output;
+            const now = Date.now();
+            if (now - lastProgress > 2000) {
+              const lines = output.split('\n').filter((l: string) => l.trim());
+              const progressLine = lines.find((l: string) => 
+                l.includes('%') || l.includes('Downloading') || l.includes('Extracting')
+              );
+              if (progressLine) {
+                console.log(`📊 ${progressLine.trim()}`);
+              }
+              lastProgress = now;
+            }
+          });
+
+          ytDlpProcess.stderr.on('data', (data: Buffer) => {
+            const output = data.toString();
+            stderr += output;
+            if (output.includes('ERROR')) {
+              console.error(`❌ ${output.trim()}`);
+            } else if (output.includes('WARNING')) {
+              console.warn(`⚠️ ${output.trim()}`);
+            } else if (output.includes('%') || output.includes('Downloading') || output.includes('Extracting')) {
+              const now = Date.now();
+              if (now - lastProgress > 2000) {
+                console.log(`📊 ${output.trim()}`);
+                lastProgress = now;
+              }
+            }
+          });
+
+          ytDlpProcess.on('close', (code: number) => {
+            if (code !== 0) {
+              console.error('❌ yt-dlp a échoué avec le code:', code);
+              console.error('stderr:', stderr.substring(0, 500));
+              
+              // Si yt-dlp échoue, essayer avec ytdl-core comme fallback
+              console.log('📦 Passage au fallback ytdl-core...');
+              downloadWithYtdlCore(info, tempDir, title, videoTitle)
+                .then(result => resolve(result))
+                .catch(error => reject(error));
+              return;
+            }
+
+            console.log('✅ yt-dlp terminé avec succès');
+
+            // Attendre un peu pour s'assurer que le fichier est écrit
+            setTimeout(() => {
+              const files = fs.readdirSync(tempDir);
+              const downloadedFile = files.find(f => f.startsWith(`download_${timestamp}`));
+
+              if (!downloadedFile) {
+                console.error('❌ Fichiers disponibles:', files);
+                reject(new Error(`Fichier téléchargé non trouvé. Fichiers présents: ${files.join(', ')}`));
+                return;
+              }
+
+              console.log(`📁 Fichier téléchargé: ${downloadedFile}`);
+
+              const filePath = path.join(tempDir, downloadedFile);
+
+              // Vérifier que le fichier existe et a une taille
+              if (!fs.existsSync(filePath)) {
+                reject(new Error('Le fichier téléchargé n\'existe pas'));
+                return;
+              }
+
+              const fileSize = fs.statSync(filePath).size;
+              if (fileSize === 0) {
+                reject(new Error('Le fichier téléchargé est vide'));
+                return;
+              }
+
+              console.log(`✅ Fichier MP3 créé: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+
+              const fileBuffer = fs.readFileSync(filePath);
+
+              // Nettoyer le fichier temporaire
+              fs.unlinkSync(filePath);
+
+              // Créer un nom de fichier propre
+              const cleanFileName = videoTitle
+                .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .substring(0, 100) + '.mp3';
+
+              const asciiFileName = cleanFileName.replace(/[^\x20-\x7E]/g, '_');
+
+              resolve(new NextResponse(fileBuffer, {
+                headers: {
+                  'Content-Type': 'audio/mpeg',
+                  'Content-Disposition': `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(cleanFileName)}`,
+                },
+              }));
+            }, 1000);
+          });
+
+          ytDlpProcess.on('error', (error: Error) => {
+            console.error('❌ Erreur lors du lancement de yt-dlp:', error);
+            // Fallback vers ytdl-core
+            downloadWithYtdlCore(info, tempDir, title, videoTitle)
+              .then(result => resolve(result))
+              .catch(err => reject(err));
+          });
+
+          // Timeout de 10 minutes
+          setTimeout(() => {
+            ytDlpProcess.kill();
+            reject(new Error('Timeout: yt-dlp a pris trop de temps (10 minutes)'));
+          }, 600000);
+        });
+      } catch (error) {
+        console.error('❌ Erreur avec yt-dlp, utilisation de ytdl-core:', error);
+        // Continuer avec ytdl-core
+      }
     }
 
-    // Sélectionner le meilleur format audio (le premier est généralement le meilleur après filtrage)
-    const bestAudioFormat = audioFormats[0];
-    console.log('✅ Format audio sélectionné:', bestAudioFormat.itag, bestAudioFormat.container, bestAudioFormat.audioBitrate + 'kbps');
+    // Fallback vers ytdl-core
+    console.log('📦 Utilisation de ytdl-core (fallback)...');
+    return await downloadWithYtdlCore(info, tempDir, title, videoTitle);
 
-    // Créer les chemins de fichiers
-    const timestamp = Date.now();
-    const safeTitle = info.videoDetails.title
-      .replace(/[^a-z0-9]/gi, '_')
-      .substring(0, 50);
-    
-    audioPath = path.join(tempDir, `${timestamp}_audio.${bestAudioFormat.container}`);
-    outputPath = path.join(tempDir, `${timestamp}.mp3`);
+  } catch (error) {
+    console.error('❌ Erreur lors du téléchargement:', error);
 
-    // Télécharger l'audio
+    // Nettoyer les fichiers temporaires en cas d'erreur
+    if (tempDir && fs.existsSync(tempDir)) {
+      try {
+        const files = fs.readdirSync(tempDir);
+        files.forEach(file => {
+          const filePath = path.join(tempDir!, file);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        });
+      } catch (cleanupError) {
+        console.error('Erreur lors du nettoyage:', cleanupError);
+      }
+    }
+
+    let errorMessage = 'Erreur lors du téléchargement';
+
+    if (error instanceof Error) {
+      errorMessage = error.message;
+
+      if (errorMessage.includes('403')) {
+        errorMessage = 'YouTube bloque l\'accès (403). Réessayez plus tard ou utilisez une autre vidéo.';
+      } else if (errorMessage.includes('Sign in to confirm your age')) {
+        errorMessage = 'Cette vidéo nécessite une vérification d\'âge et ne peut pas être téléchargée.';
+      } else if (errorMessage.includes('Private video')) {
+        errorMessage = 'Cette vidéo est privée et ne peut pas être téléchargée.';
+      }
+    }
+
+    return NextResponse.json(
+      { error: errorMessage },
+      { status: 500 }
+    );
+  }
+}
+
+// Fonction helper pour télécharger avec ytdl-core
+async function downloadWithYtdlCore(
+  info: any,
+  tempDir: string,
+  title: string,
+  videoTitle: string
+): Promise<NextResponse> {
+  console.log('📦 Téléchargement audio avec ytdl-core...');
+
+  const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+  console.log(`📊 ${audioFormats.length} formats audio disponibles`);
+
+  if (audioFormats.length === 0) {
+    throw new Error('Aucun format audio disponible pour cette vidéo');
+  }
+
+  const bestAudioFormat = audioFormats[0];
+  console.log('✅ Format audio sélectionné:', bestAudioFormat.itag, bestAudioFormat.container, bestAudioFormat.audioBitrate + 'kbps');
+
+  const timestamp = Date.now();
+  const audioPath = path.join(tempDir, `${timestamp}_audio.${bestAudioFormat.container}`);
+  const outputPath = path.join(tempDir, `${timestamp}.mp3`);
+
+  try {
     console.log('📥 Téléchargement de l\'audio...');
     const audioStream = ytdl.downloadFromInfo(info, { format: bestAudioFormat });
     const writeStream = fs.createWriteStream(audioPath);
 
-    // Gérer les erreurs du stream
     let streamError: Error | null = null;
-    let bytesDownloaded = 0;
-    let lastProgressTime = Date.now();
-    let hasStartedDownloading = false;
-
     audioStream.on('error', (error: any) => {
-      const errorMsg = error.message || String(error);
-      console.error('❌ Erreur du stream audio:', errorMsg);
-      
-      // Si c'est une erreur 403, c'est que YouTube bloque l'accès
-      if (errorMsg.includes('403') || error.statusCode === 403) {
-        streamError = new Error('YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction car YouTube a changé son système de protection.');
-      } else {
-        streamError = error;
-      }
+      console.error('❌ Erreur du stream audio:', error.message || error);
+      streamError = error;
       writeStream.destroy();
-    });
-
-    audioStream.on('data', (chunk: Buffer) => {
-      hasStartedDownloading = true;
-      bytesDownloaded += chunk.length;
-      const now = Date.now();
-      // Afficher la progression toutes les 2 secondes
-      if (now - lastProgressTime > 2000) {
-        console.log(`📊 Téléchargement en cours: ${(bytesDownloaded / 1024 / 1024).toFixed(2)} MB`);
-        lastProgressTime = now;
-      }
     });
 
     audioStream.pipe(writeStream);
 
-    // Attendre la fin du téléchargement
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         console.error('❌ Timeout du téléchargement (5 minutes)');
         audioStream.destroy();
         writeStream.destroy();
         reject(new Error('Timeout: le téléchargement a pris trop de temps'));
-      }, 300000); // 5 minutes
+      }, 300000);
 
       writeStream.on('finish', () => {
         clearTimeout(timeout);
@@ -118,12 +350,7 @@ export async function POST(request: NextRequest) {
           reject(streamError);
           return;
         }
-        // Vérifier qu'on a bien téléchargé quelque chose
-        if (!hasStartedDownloading || bytesDownloaded === 0) {
-          reject(new Error('Aucune donnée téléchargée. YouTube bloque probablement l\'accès (403).'));
-          return;
-        }
-        console.log(`✅ Téléchargement audio terminé: ${(bytesDownloaded / 1024 / 1024).toFixed(2)} MB`);
+        console.log('✅ Téléchargement audio terminé');
         resolve();
       });
 
@@ -134,7 +361,6 @@ export async function POST(request: NextRequest) {
       });
     });
 
-    // Vérifier que le fichier existe
     if (!fs.existsSync(audioPath)) {
       throw new Error('Le fichier audio téléchargé n\'existe pas');
     }
@@ -150,35 +376,22 @@ export async function POST(request: NextRequest) {
       );
       console.log('✅ Conversion MP3 réussie');
 
-      // Vérifier que le fichier MP3 existe
       if (!fs.existsSync(outputPath)) {
         throw new Error('Le fichier MP3 converti n\'existe pas');
       }
 
-      // Lire le fichier MP3
       const fileBuffer = fs.readFileSync(outputPath);
-      const finalSize = fileBuffer.length;
-      console.log(`✅ Fichier MP3 créé: ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
 
-      // Nettoyer les fichiers temporaires (après lecture du buffer)
-      try {
-        if (audioPath && fs.existsSync(audioPath)) {
-          fs.unlinkSync(audioPath);
-        }
-        if (outputPath && fs.existsSync(outputPath)) {
-          fs.unlinkSync(outputPath);
-        }
-      } catch (cleanupErr) {
-        // Ignorer les erreurs de nettoyage
-      }
+      // Nettoyer
+      fs.unlinkSync(audioPath);
+      fs.unlinkSync(outputPath);
 
-      // Créer un nom de fichier propre
-      const cleanFileName = info.videoDetails.title
+      const cleanFileName = videoTitle
         .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .substring(0, 100) + '.mp3';
-      
+
       const asciiFileName = cleanFileName.replace(/[^\x20-\x7E]/g, '_');
 
       return new NextResponse(fileBuffer, {
@@ -188,30 +401,19 @@ export async function POST(request: NextRequest) {
         },
       });
     } catch (ffmpegError: any) {
-      console.warn('⚠️ ffmpeg non disponible ou erreur de conversion');
-      console.warn('⚠️ Retour de l\'audio original au format', bestAudioFormat.container);
-      
-      // Si ffmpeg n'est pas disponible, retourner l'audio original
+      console.warn('⚠️ ffmpeg non disponible, retour de l\'audio original');
       const fileBuffer = fs.readFileSync(audioPath);
-      
-      // Nettoyer les fichiers temporaires (après lecture du buffer)
-      try {
-        if (audioPath && fs.existsSync(audioPath)) {
-          fs.unlinkSync(audioPath);
-        }
-        if (outputPath && fs.existsSync(outputPath)) {
-          fs.unlinkSync(outputPath);
-        }
-      } catch (cleanupErr) {
-        // Ignorer les erreurs de nettoyage
+      fs.unlinkSync(audioPath);
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
       }
 
-      const cleanFileName = info.videoDetails.title
+      const cleanFileName = videoTitle
         .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .substring(0, 100) + '.' + bestAudioFormat.container;
-      
+
       const asciiFileName = cleanFileName.replace(/[^\x20-\x7E]/g, '_');
       const contentType = bestAudioFormat.container === 'webm' ? 'audio/webm' : 'audio/mp4';
 
@@ -223,43 +425,12 @@ export async function POST(request: NextRequest) {
       });
     }
   } catch (error) {
-    console.error('❌ Erreur lors du téléchargement:', error);
-
-    // Nettoyer les fichiers temporaires en cas d'erreur
-    try {
-      if (audioPath && fs.existsSync(audioPath)) {
-        fs.unlinkSync(audioPath);
-      }
-      if (outputPath && fs.existsSync(outputPath)) {
-        fs.unlinkSync(outputPath);
-      }
-    } catch (cleanupError) {
-      console.error('Erreur lors du nettoyage:', cleanupError);
+    if (fs.existsSync(audioPath)) {
+      fs.unlinkSync(audioPath);
     }
-
-    let errorMessage = 'Erreur lors du téléchargement';
-    
-    if (error instanceof Error) {
-      errorMessage = error.message;
-      
-      // Messages d'erreur spécifiques
-      if (errorMessage.includes('403') || errorMessage.includes('bloque l\'accès')) {
-        errorMessage = 'YouTube bloque l\'accès (403). ytdl-core ne peut pas contourner cette restriction car YouTube a changé son système de protection.\n\n⚠️ Limitation connue: ytdl-core devient obsolète face aux protections YouTube.\n\n💡 Solutions possibles:\n- Réessayez plus tard (peut être temporaire)\n- Utilisez une autre vidéo\n- Certaines vidéos fonctionnent encore, d\'autres non';
-      } else if (errorMessage.includes('Sign in to confirm your age')) {
-        errorMessage = 'Cette vidéo nécessite une vérification d\'âge et ne peut pas être téléchargée.';
-      } else if (errorMessage.includes('Private video')) {
-        errorMessage = 'Cette vidéo est privée et ne peut pas être téléchargée.';
-      } else if (errorMessage.includes('decipher') || errorMessage.includes('parse') || errorMessage.includes('Stream URLs will be missing')) {
-        errorMessage = 'YouTube a changé son système de protection. ytdl-core ne peut pas décoder cette vidéo.\n\n⚠️ Les warnings "Could not parse decipher function" indiquent que YouTube a mis à jour ses protections.\n\n💡 Cette limitation est connue avec ytdl-core qui devient obsolète face aux protections YouTube.';
-      } else if (errorMessage.includes('Aucune donnée téléchargée')) {
-        errorMessage = 'Aucune donnée n\'a pu être téléchargée. YouTube bloque probablement l\'accès (403).\n\n⚠️ ytdl-core ne peut pas contourner les restrictions YouTube actuelles.';
-      }
+    if (fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
     }
-
-    return NextResponse.json(
-      { error: errorMessage },
-      { status: 500 }
-    );
+    throw error;
   }
 }
-
