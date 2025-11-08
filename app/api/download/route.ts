@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
         console.log(`🚀 Lancement de yt-dlp pour extraire l'audio en MP3...`);
 
         // Utiliser spawn pour avoir un meilleur contrôle
-        return new Promise((resolve, reject) => {
+        return new Promise<NextResponse>((resolve, reject) => {
           const args = [
             '--extractor-args', 'youtube:player_client=web',
             '--no-playlist',
@@ -125,13 +125,13 @@ export async function POST(request: NextRequest) {
           console.log(`📋 Commande: ${ytDlpPath} ${args.join(' ')}`);
 
           const ytDlpProcess = spawn(ytDlpPath, args, {
-            cwd: tempDir,
+            cwd: tempDir || process.cwd(),
             shell: false,
             env: {
               ...process.env,
               PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
             },
-          });
+          }) as any;
 
           let stdout = '';
           let stderr = '';
@@ -186,6 +186,10 @@ export async function POST(request: NextRequest) {
 
             // Attendre un peu pour s'assurer que le fichier est écrit
             setTimeout(() => {
+              if (!tempDir) {
+                reject(new Error('tempDir est null'));
+                return;
+              }
               const files = fs.readdirSync(tempDir);
               const downloadedFile = files.find(f => f.startsWith(`download_${timestamp}`));
 
@@ -197,7 +201,7 @@ export async function POST(request: NextRequest) {
 
               console.log(`📁 Fichier téléchargé: ${downloadedFile}`);
 
-              const filePath = path.join(tempDir, downloadedFile);
+              const filePath = path.join(tempDir!, downloadedFile);
 
               // Vérifier que le fichier existe et a une taille
               if (!fs.existsSync(filePath)) {
