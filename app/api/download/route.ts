@@ -90,9 +90,8 @@ async function updateYtDlpIfNeeded(ytDlpPath: string): Promise<void> {
 }
 
 // Fonction pour récupérer les informations d'un format spécifique
-async function getFormatInfo(ytDlpPath: string, url: string, formatId: string, useAndroidClient: boolean): Promise<{ hasAudio: boolean; height: number | null } | null> {
+async function getFormatInfo(ytDlpPath: string, url: string, formatId: string, playerClient: string): Promise<{ hasAudio: boolean; height: number | null } | null> {
   try {
-    const playerClient = useAndroidClient ? 'android' : 'web';
     const { stdout } = await execAsync(
       `"${ytDlpPath}" --dump-json --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${url}"`,
       { timeout: 30000 }
@@ -113,8 +112,81 @@ async function getFormatInfo(ytDlpPath: string, url: string, formatId: string, u
   return null;
 }
 
+// Fonction pour trouver le meilleur format disponible avec un client spécifique
+async function findBestFormat(ytDlpPath: string, url: string, format: 'mp3' | 'mp4', playerClient: string): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync(
+      `"${ytDlpPath}" --dump-json --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${url}"`,
+      { timeout: 30000 }
+    );
+    const videoInfo = JSON.parse(stdout);
+    const formats = videoInfo.formats || [];
+    
+    if (format === 'mp3') {
+      // Pour MP3, trouver le meilleur format audio
+      const audioFormats = formats.filter((f: any) => 
+        f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none')
+      );
+      if (audioFormats.length > 0) {
+        // Trier par bitrate audio (meilleur en premier)
+        audioFormats.sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
+        return audioFormats[0].format_id;
+      }
+    } else {
+      // Pour MP4, trouver le meilleur format vidéo
+      // Préférer les formats combinés (vidéo+audio)
+      // Ignorer les formats de très basse qualité (144p, 240p) - minimum 360p
+      const combinedFormats = formats.filter((f: any) => 
+        f.vcodec && f.vcodec !== 'none' && 
+        f.acodec && f.acodec !== 'none' && 
+        f.height && f.height >= 360 // Minimum 360p
+      );
+      
+      if (combinedFormats.length > 0) {
+        // Trier par hauteur (meilleure résolution en premier)
+        combinedFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+        const bestCombined = combinedFormats[0];
+        console.log(`✅ Format combiné trouvé: ${bestCombined.format_id} (${bestCombined.height}p)`);
+        return bestCombined.format_id;
+      }
+      
+      // Si pas de format combiné de bonne qualité, trouver le meilleur format vidéo seul
+      // Minimum 360p pour éviter 144p/240p
+      const videoFormats = formats.filter((f: any) => 
+        f.vcodec && f.vcodec !== 'none' && 
+        f.height && f.height >= 360 && // Minimum 360p
+        (!f.acodec || f.acodec === 'none')
+      );
+      
+      if (videoFormats.length > 0) {
+        // Trier par hauteur (meilleure résolution en premier)
+        videoFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+        const bestVideo = videoFormats[0];
+        console.log(`✅ Format vidéo trouvé: ${bestVideo.format_id} (${bestVideo.height}p, nécessite combinaison avec audio)`);
+        return bestVideo.format_id;
+      }
+      
+      // Si vraiment aucun format >= 360p, accepter le meilleur disponible (mais log un warning)
+      console.warn('⚠️ Aucun format >= 360p trouvé, recherche du meilleur format disponible...');
+      const allVideoFormats = formats.filter((f: any) => 
+        f.vcodec && f.vcodec !== 'none' && f.height && (!f.acodec || f.acodec === 'none')
+      );
+      
+      if (allVideoFormats.length > 0) {
+        allVideoFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+        const bestAvailable = allVideoFormats[0];
+        console.warn(`⚠️ Format disponible le plus élevé: ${bestAvailable.format_id} (${bestAvailable.height}p)`);
+        return bestAvailable.format_id;
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ Impossible de récupérer les formats disponibles:', error);
+  }
+  return null;
+}
+
 // Fonction pour télécharger avec yt-dlp
-async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string, useAndroidClient: boolean = false): Promise<{ filePath: string; fileName: string }> {
+async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string, playerClient: string = 'web'): Promise<{ filePath: string; fileName: string }> {
   const ytDlpPath = await findYtDlpPath();
   if (!ytDlpPath) {
     throw new Error('yt-dlp non trouvé');
@@ -147,11 +219,25 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   console.log(`📁 Dossier de sortie: ${tempDir}`);
   console.log(`📝 Nom de fichier final: ${finalFileName}`);
   console.log(`🎯 Qualité sélectionnée: ${quality || 'best'}`);
+  console.log(`🌐 Client YouTube utilisé: ${playerClient}`);
   
-  // Récupérer les informations du format si une qualité spécifique est demandée
+  // Si "best" est sélectionné, trouver le meilleur format disponible avec ce client
+  let actualQuality = quality;
+  if (quality === 'best' || !quality) {
+    console.log('🔍 Recherche du meilleur format disponible...');
+    const bestFormatId = await findBestFormat(ytDlpPath, urlOnly, format, playerClient);
+    if (bestFormatId) {
+      actualQuality = bestFormatId;
+      console.log(`✅ Meilleur format trouvé: ${actualQuality}`);
+    } else {
+      console.warn('⚠️ Impossible de trouver un format, utilisation de la stratégie par défaut');
+    }
+  }
+  
+  // Récupérer les informations du format sélectionné
   let formatInfo: { hasAudio: boolean; height: number | null } | null = null;
-  if (format === 'mp4' && quality && quality !== 'best') {
-    formatInfo = await getFormatInfo(ytDlpPath, urlOnly, quality, useAndroidClient);
+  if (format === 'mp4' && actualQuality && actualQuality !== 'best') {
+    formatInfo = await getFormatInfo(ytDlpPath, urlOnly, actualQuality, playerClient);
     if (formatInfo) {
       console.log(`📊 Format sélectionné: ${formatInfo.hasAudio ? 'combiné' : 'vidéo seul'}, hauteur: ${formatInfo.height || 'N/A'}p`);
     }
@@ -163,47 +249,40 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     const args: string[] = [];
     
     // Options de compatibilité YouTube essentielles
-    // Utiliser différents clients selon le paramètre (web par défaut, android en fallback)
-    const playerClient = useAndroidClient ? 'android' : 'web';
     args.push('--extractor-args', `youtube:player_client=${playerClient}`);
     // Ajouter des options de compatibilité supplémentaires
     args.push('--no-playlist', '--progress', '--newline', '--no-mtime');
     
     if (format === 'mp3') {
       // Pour MP3, extraire l'audio et convertir en MP3
-      if (quality && quality !== 'best') {
-        // Si une qualité spécifique est demandée, utiliser le format ID
-        // Essayer d'abord avec le format spécifique, puis fallback sur bestaudio
-        args.push('-f', `${quality}/bestaudio/best`, '-x', '--audio-format', 'mp3', '--audio-quality', '192K');
+      if (actualQuality && actualQuality !== 'best') {
+        // Utiliser le format ID trouvé
+        args.push('-f', actualQuality, '-x', '--audio-format', 'mp3', '--audio-quality', '192K');
       } else {
-        // Meilleure qualité par défaut - laisser yt-dlp choisir le meilleur format audio
+        // Fallback: laisser yt-dlp choisir le meilleur format audio
         args.push('-x', '--audio-format', 'mp3', '--audio-quality', '192K');
       }
     } else {
       // Pour MP4, télécharger directement en MP4
-      if (quality && quality !== 'best') {
+      if (actualQuality && actualQuality !== 'best') {
         if (formatInfo && formatInfo.hasAudio) {
           // Format combiné (vidéo+audio) : utiliser directement
-          // Pas de fallback pour éviter de tomber sur une qualité inférieure
-          args.push('-f', quality);
+          args.push('-f', actualQuality);
         } else {
           // Format vidéo seul : combiner avec le meilleur audio
           // Utiliser une syntaxe qui préserve la qualité vidéo demandée
           if (formatInfo && formatInfo.height) {
-            // Utiliser le format vidéo spécifique + bestaudio
-            // Fallback vers un format combiné de la même résolution ou supérieure uniquement
             const minHeight = formatInfo.height;
-            // Syntaxe: format_id+bestaudio / format combiné même résolution / meilleur format >= 360p
-            args.push('-f', `${quality}+bestaudio/best[height=${minHeight}]/bestvideo[height>=${minHeight}]+bestaudio/best[height>=360]`);
+            // Essayer le format spécifique + bestaudio, fallback vers formats de même résolution ou supérieure
+            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height>=${minHeight}]+bestaudio/best[height>=${minHeight}]`);
           } else {
-            // Pas d'info de hauteur, essayer de combiner avec bestaudio
-            // Fallback minimum 360p pour éviter 144p
-            args.push('-f', `${quality}+bestaudio/bestvideo[height>=360]+bestaudio/best[height>=360]`);
+            // Pas d'info de hauteur, utiliser le format + bestaudio avec fallback minimum 720p
+            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height>=720]+bestaudio/best[height>=720]`);
           }
         }
       } else {
-        // Meilleure qualité par défaut (préférer les formats combinés)
-        args.push('-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best');
+        // Fallback: utiliser une qualité minimale de 720p pour éviter 144p
+        args.push('-f', 'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best[height>=720][ext=mp4]/best[height>=720]');
       }
     }
     
@@ -268,17 +347,8 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
         console.error('stderr:', stderr.substring(0, 1000));
         console.error('stdout:', stdout.substring(0, 1000));
         
-        // Si l'erreur est liée à YouTube (400, 403, Precondition check failed)
-        // Et qu'on n'a pas encore essayé avec le client Android, signaler qu'on peut réessayer
-        if ((stderr.includes('Precondition check failed') || 
-            stderr.includes('HTTP Error 400') || 
-            stderr.includes('HTTP Error 403') ||
-            stderr.includes('Signature extraction failed')) && !useAndroidClient) {
-          // Cette erreur sera gérée par l'appelant pour réessayer avec le client Android
-          reject(new Error('YOUTUBE_CLIENT_WEB_FAILED'));
-        } else {
-          reject(new Error(`yt-dlp a échoué (code ${code}): ${stderr.substring(0, 300) || stdout.substring(0, 300)}`));
-        }
+        // Rejeter avec l'erreur
+        reject(new Error(`yt-dlp a échoué (code ${code}): ${stderr.substring(0, 300) || stdout.substring(0, 300)}`));
         return;
       }
       
@@ -386,50 +456,31 @@ export async function POST(request: NextRequest) {
         const videoTitle = info.videoDetails.title;
         let filePath: string, fileName: string;
         
-        try {
-          // Essayer d'abord avec le client web (par défaut)
-          const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, false);
-          filePath = result.filePath;
-          fileName = result.fileName;
-        } catch (error: any) {
-          // Si le client web échoue avec une erreur YouTube spécifique, essayer avec le client Android
-          if (error.message === 'YOUTUBE_CLIENT_WEB_FAILED') {
-            console.warn('⚠️ Client web a échoué, tentative avec le client Android...');
-            try {
-              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, true);
-              filePath = result.filePath;
-              fileName = result.fileName;
-            } catch (androidError: any) {
-              // Si le client Android échoue aussi et qu'un format spécifique était demandé, 
-              // essayer sans format spécifique (laisser yt-dlp choisir)
-              if (quality && quality !== 'best') {
-                console.warn(`⚠️ Format ${quality} a échoué, tentative sans format spécifique...`);
-                const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', true);
-                filePath = result.filePath;
-                fileName = result.fileName;
-              } else {
-                throw androidError;
-              }
-            }
-          } else if (quality && quality !== 'best') {
-            // Si une erreur autre et qu'un format spécifique était demandé, essayer sans format spécifique
-            console.warn(`⚠️ Format ${quality} a échoué, tentative sans format spécifique...`);
-            try {
-              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', false);
-              filePath = result.filePath;
-              fileName = result.fileName;
-            } catch (fallbackError) {
-              // Si même le fallback échoue, essayer avec le client Android
-              console.warn('⚠️ Tentative avec le client Android et format automatique...');
-              const result = await downloadWithYtDlp(url, format, tempDir, videoTitle, 'best', true);
-              filePath = result.filePath;
-              fileName = result.fileName;
-            }
-          } else {
-            throw error;
+        // Liste des clients à essayer dans l'ordre de préférence
+        const clients = ['web', 'tv', 'ios', 'android'];
+        let lastError: Error | null = null;
+        let downloadResult: { filePath: string; fileName: string } | null = null;
+        
+        for (const client of clients) {
+          try {
+            console.log(`🔄 Tentative avec le client ${client}...`);
+            downloadResult = await downloadWithYtDlp(url, format, tempDir, videoTitle, quality, client);
+            console.log(`✅ Succès avec le client ${client}`);
+            break;
+          } catch (error: any) {
+            console.warn(`⚠️ Client ${client} a échoué: ${error.message?.substring(0, 100)}`);
+            lastError = error;
+            // Continuer avec le client suivant
+            continue;
           }
         }
         
+        if (!downloadResult) {
+          throw lastError || new Error('Tous les clients YouTube ont échoué');
+        }
+        
+        filePath = downloadResult.filePath;
+        fileName = downloadResult.fileName;
         console.log('✅ Fichier téléchargé:', fileName);
         
         // Attendre un peu pour s'assurer que le fichier est complètement écrit
