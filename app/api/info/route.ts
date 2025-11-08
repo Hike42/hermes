@@ -92,6 +92,7 @@ export async function POST(request: NextRequest) {
             quality: f.height ? `${f.height}p` : f.quality || 'unknown',
             ext: f.ext || 'unknown',
             hasAudio: true,
+            height: f.height || null,
           }))
           .filter((f: any, index: number, self: any[]) => 
             index === self.findIndex((t: any) => t.quality === f.quality)
@@ -112,6 +113,7 @@ export async function POST(request: NextRequest) {
             quality: f.height ? `${f.height}p (vidéo seule)` : f.quality || 'unknown',
             ext: f.ext || 'unknown',
             hasAudio: false,
+            height: f.height || null,
           }))
           .filter((f: any, index: number, self: any[]) => 
             index === self.findIndex((t: any) => t.quality === f.quality)

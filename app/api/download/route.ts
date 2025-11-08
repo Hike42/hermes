@@ -89,6 +89,30 @@ async function updateYtDlpIfNeeded(ytDlpPath: string): Promise<void> {
   }
 }
 
+// Fonction pour récupérer les informations d'un format spécifique
+async function getFormatInfo(ytDlpPath: string, url: string, formatId: string, useAndroidClient: boolean): Promise<{ hasAudio: boolean; height: number | null } | null> {
+  try {
+    const playerClient = useAndroidClient ? 'android' : 'web';
+    const { stdout } = await execAsync(
+      `"${ytDlpPath}" --dump-json --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${url}"`,
+      { timeout: 30000 }
+    );
+    const videoInfo = JSON.parse(stdout);
+    const formats = videoInfo.formats || [];
+    const format = formats.find((f: any) => f.format_id === formatId);
+    
+    if (format) {
+      return {
+        hasAudio: format.acodec && format.acodec !== 'none',
+        height: format.height || null,
+      };
+    }
+  } catch (error) {
+    console.warn('⚠️ Impossible de récupérer les infos du format, utilisation de la stratégie par défaut');
+  }
+  return null;
+}
+
 // Fonction pour télécharger avec yt-dlp
 async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string, useAndroidClient: boolean = false): Promise<{ filePath: string; fileName: string }> {
   const ytDlpPath = await findYtDlpPath();
@@ -124,6 +148,15 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   console.log(`📝 Nom de fichier final: ${finalFileName}`);
   console.log(`🎯 Qualité sélectionnée: ${quality || 'best'}`);
   
+  // Récupérer les informations du format si une qualité spécifique est demandée
+  let formatInfo: { hasAudio: boolean; height: number | null } | null = null;
+  if (format === 'mp4' && quality && quality !== 'best') {
+    formatInfo = await getFormatInfo(ytDlpPath, urlOnly, quality, useAndroidClient);
+    if (formatInfo) {
+      console.log(`📊 Format sélectionné: ${formatInfo.hasAudio ? 'combiné' : 'vidéo seul'}, hauteur: ${formatInfo.height || 'N/A'}p`);
+    }
+  }
+  
   // Utiliser spawn au lieu de exec pour avoir un meilleur contrôle et voir la progression
   return new Promise((resolve, reject) => {
     // Construire les arguments directement
@@ -149,9 +182,25 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     } else {
       // Pour MP4, télécharger directement en MP4
       if (quality && quality !== 'best') {
-        // Si une qualité spécifique est demandée, utiliser le format ID
-        // Si le format a déjà l'audio, utiliser directement, sinon combiner avec le meilleur audio
-        args.push('-f', `${quality}+bestaudio/best[ext=mp4]/best`);
+        if (formatInfo && formatInfo.hasAudio) {
+          // Format combiné (vidéo+audio) : utiliser directement
+          // Pas de fallback pour éviter de tomber sur une qualité inférieure
+          args.push('-f', quality);
+        } else {
+          // Format vidéo seul : combiner avec le meilleur audio
+          // Utiliser une syntaxe qui préserve la qualité vidéo demandée
+          if (formatInfo && formatInfo.height) {
+            // Utiliser le format vidéo spécifique + bestaudio
+            // Fallback vers un format combiné de la même résolution ou supérieure uniquement
+            const minHeight = formatInfo.height;
+            // Syntaxe: format_id+bestaudio / format combiné même résolution / meilleur format >= 360p
+            args.push('-f', `${quality}+bestaudio/best[height=${minHeight}]/bestvideo[height>=${minHeight}]+bestaudio/best[height>=360]`);
+          } else {
+            // Pas d'info de hauteur, essayer de combiner avec bestaudio
+            // Fallback minimum 360p pour éviter 144p
+            args.push('-f', `${quality}+bestaudio/bestvideo[height>=360]+bestaudio/best[height>=360]`);
+          }
+        }
       } else {
         // Meilleure qualité par défaut (préférer les formats combinés)
         args.push('-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best');
