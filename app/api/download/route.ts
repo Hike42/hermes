@@ -304,41 +304,74 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     console.warn('⚠️ Impossible de récupérer les formats avec --dump-json');
   }
   
-  // Si peu de formats ou seulement basse qualité, essayer aussi --list-formats pour voir tous les formats
-  // (y compris ceux qui nécessitent des tokens PO mais qui peuvent être disponibles)
-  if (!formatsRetrieved || availableFormats.length < 10) {
-    try {
-      console.log('🔍 Tentative de liste complète des formats avec --list-formats...');
-      const { stdout: listStdout } = await execAsync(
-        `"${ytDlpPath}" --list-formats --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${urlOnly}"`,
-        { timeout: 30000 }
-      );
-      // Parser la sortie de --list-formats pour extraire les IDs de formats
-      // Format typique: "ID  EXT   RESOLUTION  FPS │ FILESIZE   TBR PROTO │ VCODEC  VBR ACODEC      ABR"
-      const formatLines = listStdout.split('\n').filter((line: string) => {
-        // Chercher les lignes qui contiennent des IDs de formats (commencent par des chiffres)
-        return /^\s*\d+\s+/.test(line) && (line.includes('video') || line.includes('audio') || line.includes('mp4') || line.includes('webm'));
-      });
-      
-      if (formatLines.length > availableFormats.length) {
-        console.log(`📊 ${formatLines.length} formats trouvés avec --list-formats (plus que les ${availableFormats.length} avec --dump-json)`);
-        // Extraire les IDs de formats depuis --list-formats
-        const formatIds = formatLines.map((line: string) => {
-          const match = line.match(/^\s*(\d+)/);
-          return match ? match[1] : null;
-        }).filter((id: string | null) => id !== null);
-        
-        console.log(`📋 IDs de formats disponibles: ${formatIds.slice(0, 20).join(', ')}...`);
-        
-        // Si on a des formats dans --dump-json, les compléter avec ceux de --list-formats
-        // Sinon, on utilisera une stratégie différente
-        if (formatIds.length > availableFormats.length) {
-          console.log('⚠️ Plus de formats disponibles avec --list-formats qu\'avec --dump-json - YouTube peut bloquer certains formats');
+  // TOUJOURS utiliser --list-formats pour voir TOUS les formats disponibles
+  // YouTube peut masquer les formats haute qualité dans --dump-json mais les montrer dans --list-formats
+  let allAvailableFormatIds: string[] = [];
+  let hasHighQualityFormats = false;
+  let maxHeightFound = 0;
+  
+  try {
+    console.log('🔍 Liste complète des formats avec --list-formats (y compris ceux qui nécessitent des tokens PO)...');
+    const { stdout: listStdout } = await execAsync(
+      `"${ytDlpPath}" --list-formats --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${urlOnly}"`,
+      { timeout: 30000 }
+    );
+    
+    // Parser la sortie de --list-formats
+    // Format: "ID  EXT   RESOLUTION  FPS │ FILESIZE   TBR PROTO │ VCODEC  VBR ACODEC      ABR"
+    const lines = listStdout.split('\n');
+    const formatInfos: Array<{id: string, height: number, hasAudio: boolean}> = [];
+    
+    for (const line of lines) {
+      // Chercher les lignes de formats vidéo
+      if (/^\s*\d+\s+/.test(line)) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 3) {
+          const formatId = parts[0];
+          const resolution = parts[2]; // Format: "1080p", "720p", "360p", etc.
+          const heightMatch = resolution.match(/(\d+)p/);
+          const height = heightMatch ? parseInt(heightMatch[1]) : 0;
+          
+          // Vérifier si c'est un format vidéo (contient video ou a une résolution)
+          const hasVideo = height > 0 || line.toLowerCase().includes('video');
+          const hasAudio = line.toLowerCase().includes('audio') || (!line.toLowerCase().includes('videoonly'));
+          
+          if (hasVideo && height > 0) {
+            formatInfos.push({ id: formatId, height, hasAudio: hasAudio || !line.toLowerCase().includes('videoonly') });
+            allAvailableFormatIds.push(formatId);
+            
+            if (height > maxHeightFound) {
+              maxHeightFound = height;
+            }
+            
+            if (height >= 720) {
+              hasHighQualityFormats = true;
+            }
+          }
         }
       }
-    } catch (listError) {
-      console.warn('⚠️ Impossible de lister les formats avec --list-formats');
     }
+    
+    if (formatInfos.length > 0) {
+      // Trier par hauteur (meilleure qualité en premier)
+      formatInfos.sort((a, b) => b.height - a.height);
+      const bestFormat = formatInfos[0];
+      
+      console.log(`📊 ${formatInfos.length} formats trouvés avec --list-formats`);
+      console.log(`📊 Meilleure résolution disponible: ${bestFormat.height}p (format ID: ${bestFormat.id})`);
+      
+      if (hasHighQualityFormats) {
+        const highQualityFormats = formatInfos.filter(f => f.height >= 720);
+        console.log(`✅ ${highQualityFormats.length} formats haute qualité (>= 720p) trouvés: ${highQualityFormats.slice(0, 5).map(f => `${f.id} (${f.height}p)`).join(', ')}`);
+        console.log(`🎯 Ces formats existent mais peuvent nécessiter des tokens PO ou être masqués dans --dump-json`);
+      } else {
+        console.warn(`⚠️ Aucun format >= 720p trouvé dans --list-formats (max: ${maxHeightFound}p)`);
+      }
+    }
+  } catch (listError: any) {
+    console.warn('⚠️ Impossible de lister les formats avec --list-formats:', listError.message?.substring(0, 100));
+    // Si --list-formats échoue, on assume qu'il peut y avoir des formats haute qualité non listés
+    console.warn('⚠️ En cas d\'échec, on utilisera quand même une syntaxe agressive pour chercher les formats haute qualité');
   }
   
   // Si "best" est sélectionné, trouver le meilleur format disponible
@@ -347,25 +380,33 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   
   if (quality === 'best' || !quality) {
     console.log('🔍 Recherche du meilleur format disponible (priorité 1080p, minimum 720p)...');
-    // Utiliser une fonction qui force une qualité minimale de 720p
-    if (formatsRetrieved && availableFormats.length > 0) {
-      // D'abord essayer avec minimum 720p
-      let bestFormatId = findBestFormatFromList(availableFormats, format, 720);
-      if (!bestFormatId) {
-        // Si aucun format >= 720p, accepter le meilleur disponible (même si < 720p)
-        console.warn('⚠️ Aucun format >= 720p disponible, utilisation du meilleur format disponible...');
-        bestFormatId = findBestFormatFromList(availableFormats, format, 0); // Pas de minimum
-      }
+    
+    // CRITIQUE: Si --list-formats a trouvé des formats haute qualité, on sait qu'ils existent
+    // Même s'ils ne sont pas dans --dump-json, on DOIT utiliser la syntaxe agressive
+    // Ne JAMAIS utiliser un format basse qualité de --dump-json si --list-formats montre des formats meilleurs
+    if (hasHighQualityFormats) {
+      console.log('✅ Formats haute qualité (>= 720p) détectés avec --list-formats');
+      console.log('⚠️ YouTube masque ces formats dans --dump-json mais ils sont disponibles pour le téléchargement');
+      console.log('🎯 Utilisation d\'une syntaxe agressive pour forcer l\'accès aux formats 1080p/720p');
+      actualQuality = 'best'; // TOUJOURS utiliser la syntaxe agressive quand on sait qu'il y a des formats haute qualité
+    } else if (formatsRetrieved && availableFormats.length > 0) {
+      // Vérifier si les formats de --dump-json sont de bonne qualité
+      const bestFormatId = findBestFormatFromList(availableFormats, format, 720);
       if (bestFormatId) {
+        // On a un format >= 720p dans --dump-json, l'utiliser
         actualQuality = bestFormatId;
-        console.log(`✅ Meilleur format trouvé: ${actualQuality}`);
+        console.log(`✅ Format haute qualité trouvé dans --dump-json: ${actualQuality}`);
       } else {
-        console.warn('⚠️ Aucun format trouvé dans la liste, utilisation de la stratégie par défaut');
+        // Pas de format >= 720p dans --dump-json
+        // Mais on ne sait pas si --list-formats a été exécuté ou a échoué
+        console.warn('⚠️ Aucun format >= 720p dans --dump-json');
+        console.warn('⚠️ Utilisation d\'une syntaxe agressive pour chercher les formats haute qualité (ils peuvent exister même si non listés)');
+        actualQuality = 'best'; // Utiliser la syntaxe agressive
       }
     } else {
-      // Si on n'a pas pu récupérer les formats, laisser yt-dlp choisir avec une syntaxe flexible
-      console.warn('⚠️ Impossible de lister les formats, utilisation d\'une syntaxe flexible');
-      actualQuality = 'best'; // Sera géré par une syntaxe flexible dans les args
+      // Pas de formats listés, utiliser une syntaxe agressive
+      console.warn('⚠️ Impossible de lister les formats, utilisation d\'une syntaxe agressive');
+      actualQuality = 'best'; // Sera géré par la syntaxe agressive
     }
   } else if (quality && formatsRetrieved && availableFormats.length > 0) {
     // Vérifier si le format demandé est disponible
