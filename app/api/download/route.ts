@@ -133,12 +133,16 @@ export async function POST(request: NextRequest) {
       const finalSize = fileBuffer.length;
       console.log(`✅ Fichier MP3 créé: ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
 
-      // Nettoyer les fichiers temporaires
-      if (audioPath && fs.existsSync(audioPath)) {
-        fs.unlinkSync(audioPath);
-      }
-      if (outputPath && fs.existsSync(outputPath)) {
-        fs.unlinkSync(outputPath);
+      // Nettoyer les fichiers temporaires (après lecture du buffer)
+      try {
+        if (audioPath && fs.existsSync(audioPath)) {
+          fs.unlinkSync(audioPath);
+        }
+        if (outputPath && fs.existsSync(outputPath)) {
+          fs.unlinkSync(outputPath);
+        }
+      } catch (cleanupErr) {
+        // Ignorer les erreurs de nettoyage
       }
 
       // Créer un nom de fichier propre
@@ -163,12 +167,16 @@ export async function POST(request: NextRequest) {
       // Si ffmpeg n'est pas disponible, retourner l'audio original
       const fileBuffer = fs.readFileSync(audioPath);
       
-      // Nettoyer
-      if (audioPath && fs.existsSync(audioPath)) {
-        fs.unlinkSync(audioPath);
-      }
-      if (outputPath && fs.existsSync(outputPath)) {
-        fs.unlinkSync(outputPath);
+      // Nettoyer les fichiers temporaires (après lecture du buffer)
+      try {
+        if (audioPath && fs.existsSync(audioPath)) {
+          fs.unlinkSync(audioPath);
+        }
+        if (outputPath && fs.existsSync(outputPath)) {
+          fs.unlinkSync(outputPath);
+        }
+      } catch (cleanupErr) {
+        // Ignorer les erreurs de nettoyage
       }
 
       const cleanFileName = info.videoDetails.title
