@@ -508,9 +508,20 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
             }
           }
       } else {
-        // Fallback: essayer d'abord haute qualité, puis accepter ce qui est disponible
-        // Priorité: 1080p > 720p > meilleur disponible
-        args.push('-f', 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=1080]+bestaudio/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best[ext=mp4]/best');
+        // Fallback: stratégie TRÈS agressive pour trouver les formats haute qualité
+        // Utiliser une syntaxe simplifiée qui peut mieux fonctionner
+        // Essayer d'abord les formats combinés (plus rapides), puis vidéo+audio séparés
+        console.log('🎯 Utilisation d\'une syntaxe yt-dlp TRÈS agressive pour forcer l\'accès aux formats haute qualité');
+        args.push('-f', 
+          // 1. Formats combinés 1080p (préférés - plus rapides)
+          'best[height>=1080]/' +
+          'bestvideo[height>=1080]+bestaudio/' +
+          // 2. Formats combinés 720p
+          'best[height>=720]/' +
+          'bestvideo[height>=720]+bestaudio/' +
+          // 3. Fallback: meilleur format disponible (même < 720p) - seulement en dernier recours
+          'best'
+        );
       }
     }
     
