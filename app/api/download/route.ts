@@ -113,7 +113,16 @@ async function getFormatInfo(ytDlpPath: string, url: string, formatId: string, p
 }
 
 // Fonction pour trouver le meilleur format à partir d'une liste de formats
-function findBestFormatFromList(formats: any[], format: 'mp3' | 'mp4'): string | null {
+function findBestFormatFromList(formats: any[], format: 'mp3' | 'mp4', minHeight: number = 720): string | null {
+  console.log(`🔍 Recherche du meilleur format (minimum ${minHeight}p) parmi ${formats.length} formats...`);
+  
+  // Logger les formats disponibles pour debug
+  if (format === 'mp4') {
+    const videoFormats = formats.filter((f: any) => f.vcodec && f.vcodec !== 'none' && f.height);
+    const heights = videoFormats.map((f: any) => f.height).filter((h: any) => h).sort((a: number, b: number) => b - a);
+    console.log(`📊 Résolutions disponibles: ${heights.slice(0, 10).join('p, ')}p...`);
+  }
+  
   if (format === 'mp3') {
     // Pour MP3, trouver le meilleur format audio
     const audioFormats = formats.filter((f: any) => 
@@ -122,44 +131,73 @@ function findBestFormatFromList(formats: any[], format: 'mp3' | 'mp4'): string |
     if (audioFormats.length > 0) {
       // Trier par bitrate audio (meilleur en premier)
       audioFormats.sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
-      return audioFormats[0].format_id;
+      const best = audioFormats[0];
+      console.log(`✅ Format audio trouvé: ${best.format_id} (${best.abr || 'N/A'} kbps)`);
+      return best.format_id;
     }
   } else {
     // Pour MP4, trouver le meilleur format vidéo
     // Préférer les formats combinés (vidéo+audio)
-    // Ignorer les formats de très basse qualité (144p, 240p) - minimum 360p
-    const combinedFormats = formats.filter((f: any) => 
+    // Commencer par 1080p, puis 720p minimum
+    
+    // Essayer d'abord 1080p
+    let combinedFormats = formats.filter((f: any) => 
       f.vcodec && f.vcodec !== 'none' && 
       f.acodec && f.acodec !== 'none' && 
-      f.height && f.height >= 360 // Minimum 360p
+      f.height && f.height >= 1080
     );
     
     if (combinedFormats.length > 0) {
-      // Trier par hauteur (meilleure résolution en premier)
       combinedFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
       const bestCombined = combinedFormats[0];
-      console.log(`✅ Format combiné trouvé: ${bestCombined.format_id} (${bestCombined.height}p)`);
+      console.log(`✅ Format combiné 1080p+ trouvé: ${bestCombined.format_id} (${bestCombined.height}p)`);
       return bestCombined.format_id;
     }
     
-    // Si pas de format combiné de bonne qualité, trouver le meilleur format vidéo seul
-    // Minimum 360p pour éviter 144p/240p
-    const videoFormats = formats.filter((f: any) => 
+    // Essayer 720p minimum
+    combinedFormats = formats.filter((f: any) => 
       f.vcodec && f.vcodec !== 'none' && 
-      f.height && f.height >= 360 && // Minimum 360p
+      f.acodec && f.acodec !== 'none' && 
+      f.height && f.height >= minHeight
+    );
+    
+    if (combinedFormats.length > 0) {
+      combinedFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+      const bestCombined = combinedFormats[0];
+      console.log(`✅ Format combiné ${minHeight}p+ trouvé: ${bestCombined.format_id} (${bestCombined.height}p)`);
+      return bestCombined.format_id;
+    }
+    
+    // Si pas de format combiné, trouver le meilleur format vidéo seul (1080p d'abord)
+    let videoFormats = formats.filter((f: any) => 
+      f.vcodec && f.vcodec !== 'none' && 
+      f.height && f.height >= 1080 && 
       (!f.acodec || f.acodec === 'none')
     );
     
     if (videoFormats.length > 0) {
-      // Trier par hauteur (meilleure résolution en premier)
       videoFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
       const bestVideo = videoFormats[0];
-      console.log(`✅ Format vidéo trouvé: ${bestVideo.format_id} (${bestVideo.height}p, nécessite combinaison avec audio)`);
+      console.log(`✅ Format vidéo 1080p+ trouvé: ${bestVideo.format_id} (${bestVideo.height}p, nécessite combinaison avec audio)`);
       return bestVideo.format_id;
     }
     
-    // Si vraiment aucun format >= 360p, accepter le meilleur disponible (mais log un warning)
-    console.warn('⚠️ Aucun format >= 360p trouvé, recherche du meilleur format disponible...');
+    // Essayer 720p minimum pour vidéo seule
+    videoFormats = formats.filter((f: any) => 
+      f.vcodec && f.vcodec !== 'none' && 
+      f.height && f.height >= minHeight && 
+      (!f.acodec || f.acodec === 'none')
+    );
+    
+    if (videoFormats.length > 0) {
+      videoFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+      const bestVideo = videoFormats[0];
+      console.log(`✅ Format vidéo ${minHeight}p+ trouvé: ${bestVideo.format_id} (${bestVideo.height}p, nécessite combinaison avec audio)`);
+      return bestVideo.format_id;
+    }
+    
+    // Si vraiment aucun format de bonne qualité, accepter le meilleur disponible (mais log un warning)
+    console.warn(`⚠️ Aucun format >= ${minHeight}p trouvé, recherche du meilleur format disponible...`);
     const allVideoFormats = formats.filter((f: any) => 
       f.vcodec && f.vcodec !== 'none' && f.height && (!f.acodec || f.acodec === 'none')
     );
@@ -167,7 +205,7 @@ function findBestFormatFromList(formats: any[], format: 'mp3' | 'mp4'): string |
     if (allVideoFormats.length > 0) {
       allVideoFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
       const bestAvailable = allVideoFormats[0];
-      console.warn(`⚠️ Format disponible le plus élevé: ${bestAvailable.format_id} (${bestAvailable.height}p)`);
+      console.warn(`⚠️ Format disponible le plus élevé: ${bestAvailable.format_id} (${bestAvailable.height}p) - ATTENTION: Qualité inférieure à ${minHeight}p`);
       return bestAvailable.format_id;
     }
   }
@@ -230,6 +268,7 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   console.log('🔍 Récupération des formats disponibles avec le client', playerClient, '...');
   let availableFormats: any[] = [];
   let videoInfo: any = null;
+  let formatsRetrieved = false;
   try {
     const { stdout } = await execAsync(
       `"${ytDlpPath}" --dump-json --extractor-args "youtube:player_client=${playerClient}" --no-playlist "${urlOnly}"`,
@@ -237,9 +276,15 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
     );
     videoInfo = JSON.parse(stdout);
     availableFormats = videoInfo.formats || [];
-    console.log(`✅ ${availableFormats.length} formats disponibles`);
-  } catch (error) {
-    console.warn('⚠️ Impossible de récupérer les formats disponibles:', error);
+    formatsRetrieved = availableFormats.length > 0;
+    if (formatsRetrieved) {
+      console.log(`✅ ${availableFormats.length} formats disponibles`);
+    } else {
+      console.warn('⚠️ Aucun format disponible dans la réponse JSON');
+    }
+  } catch (error: any) {
+    console.warn('⚠️ Impossible de récupérer les formats disponibles avec --dump-json');
+    // Ne pas abandonner, on utilisera une syntaxe stricte dans les arguments yt-dlp
   }
   
   // Si "best" est sélectionné, trouver le meilleur format disponible
@@ -247,34 +292,52 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   let formatInfo: { hasAudio: boolean; height: number | null } | null = null;
   
   if (quality === 'best' || !quality) {
-    console.log('🔍 Recherche du meilleur format disponible...');
-    const bestFormatId = availableFormats.length > 0 
-      ? findBestFormatFromList(availableFormats, format)
-      : await findBestFormat(ytDlpPath, urlOnly, format, playerClient);
-    if (bestFormatId) {
-      actualQuality = bestFormatId;
-      console.log(`✅ Meilleur format trouvé: ${actualQuality}`);
+    console.log('🔍 Recherche du meilleur format disponible (priorité 1080p, minimum 720p)...');
+    // Utiliser une fonction qui force une qualité minimale de 720p
+    if (formatsRetrieved && availableFormats.length > 0) {
+      const bestFormatId = findBestFormatFromList(availableFormats, format, 720);
+      if (bestFormatId) {
+        actualQuality = bestFormatId;
+        console.log(`✅ Meilleur format trouvé: ${actualQuality}`);
+      } else {
+        console.warn('⚠️ Aucun format de bonne qualité trouvé dans la liste, utilisation de la stratégie par défaut');
+      }
     } else {
-      console.warn('⚠️ Impossible de trouver un format, utilisation de la stratégie par défaut');
+      // Si on n'a pas pu récupérer les formats, laisser yt-dlp choisir avec une syntaxe stricte
+      console.warn('⚠️ Impossible de lister les formats, utilisation d\'une syntaxe stricte (minimum 720p, préfère 1080p)');
+      actualQuality = 'best'; // Sera géré par la syntaxe stricte dans les args
     }
-  } else if (quality && availableFormats.length > 0) {
+  } else if (quality && formatsRetrieved && availableFormats.length > 0) {
     // Vérifier si le format demandé est disponible
     const requestedFormat = availableFormats.find((f: any) => f.format_id === quality);
     if (!requestedFormat) {
       console.warn(`⚠️ Format ${quality} non disponible avec le client ${playerClient}, recherche du meilleur format disponible...`);
-      const bestFormatId = findBestFormatFromList(availableFormats, format);
+      const bestFormatId = findBestFormatFromList(availableFormats, format, 720);
       if (bestFormatId) {
         actualQuality = bestFormatId;
         console.log(`✅ Format de remplacement trouvé: ${actualQuality}`);
       }
     } else {
-      console.log(`✅ Format ${quality} disponible`);
+      // Vérifier aussi la résolution du format demandé
+      const formatHeight = requestedFormat.height;
+      if (formatHeight && formatHeight < 720) {
+        console.warn(`⚠️ Format ${quality} disponible mais résolution faible (${formatHeight}p), recherche d'un meilleur format...`);
+        const bestFormatId = findBestFormatFromList(availableFormats, format, 720);
+        if (bestFormatId) {
+          actualQuality = bestFormatId;
+          console.log(`✅ Format de meilleure qualité trouvé: ${actualQuality}`);
+        } else {
+          console.log(`✅ Utilisation du format demandé ${quality} (${formatHeight}p)`);
+        }
+      } else {
+        console.log(`✅ Format ${quality} disponible (${formatHeight || 'N/A'}p)`);
+      }
     }
   }
   
   // Récupérer les informations du format sélectionné
   if (format === 'mp4' && actualQuality && actualQuality !== 'best') {
-    if (availableFormats.length > 0) {
+    if (formatsRetrieved && availableFormats.length > 0) {
       const selectedFormat = availableFormats.find((f: any) => f.format_id === actualQuality);
       if (selectedFormat) {
         formatInfo = {
@@ -284,6 +347,7 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
         console.log(`📊 Format sélectionné: ${formatInfo.hasAudio ? 'combiné' : 'vidéo seul'}, hauteur: ${formatInfo.height || 'N/A'}p`);
       }
     } else {
+      // Essayer de récupérer les infos du format même si la liste complète a échoué
       formatInfo = await getFormatInfo(ytDlpPath, urlOnly, actualQuality, playerClient);
       if (formatInfo) {
         console.log(`📊 Format sélectionné: ${formatInfo.hasAudio ? 'combiné' : 'vidéo seul'}, hauteur: ${formatInfo.height || 'N/A'}p`);
@@ -322,15 +386,17 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
           if (formatInfo && formatInfo.height) {
             const minHeight = formatInfo.height;
             // Essayer le format spécifique + bestaudio, fallback vers formats de même résolution ou supérieure
-            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height>=${minHeight}]+bestaudio/best[height>=${minHeight}]`);
+            // Priorité: format demandé + audio, puis meilleur format de même résolution, puis meilleur format >= 720p
+            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height=${minHeight}]+bestaudio/bestvideo[height>=${Math.max(minHeight, 720)}]+bestaudio/best[height>=${Math.max(minHeight, 720)}]`);
           } else {
-            // Pas d'info de hauteur, utiliser le format + bestaudio avec fallback minimum 720p
-            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height>=720]+bestaudio/best[height>=720]`);
+            // Pas d'info de hauteur, utiliser le format + bestaudio avec fallback minimum 720p, idéalement 1080p
+            args.push('-f', `${actualQuality}+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo[height>=720]+bestaudio/best[height>=720]`);
           }
         }
       } else {
-        // Fallback: utiliser une qualité minimale de 720p pour éviter 144p
-        args.push('-f', 'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best[height>=720][ext=mp4]/best[height>=720]');
+        // Fallback: utiliser une qualité minimale de 720p, préférer 1080p
+        // Essayer d'abord 1080p, puis 720p minimum
+        args.push('-f', 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=1080]+bestaudio/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best[height>=720][ext=mp4]/best[height>=720]');
       }
     }
     
@@ -509,7 +575,8 @@ export async function POST(request: NextRequest) {
         let filePath: string, fileName: string;
         
         // Liste des clients à essayer dans l'ordre de préférence
-        const clients = ['web', 'tv', 'ios', 'android'];
+        // Android en premier car c'est souvent le plus fiable actuellement
+        const clients = ['android', 'tv', 'ios', 'web'];
         let lastError: Error | null = null;
         let downloadResult: { filePath: string; fileName: string } | null = null;
         
