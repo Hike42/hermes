@@ -244,6 +244,46 @@ async function findBestFormat(ytDlpPath: string, url: string, format: 'mp3' | 'm
   return null;
 }
 
+// Fonction pour récupérer un token PO (Proof of Origin) pour YouTube
+// Les tokens PO sont nécessaires pour accéder aux formats haute qualité (1080p, 720p)
+async function getPoToken(): Promise<string | null> {
+  // Option 1: Récupérer depuis un service externe (yt-session-generator)
+  // Définir YT_SESSION_SERVER dans les variables d'environnement
+  const ytSessionServer = process.env.YT_SESSION_SERVER;
+  
+  if (ytSessionServer) {
+    try {
+      const url = ytSessionServer.endsWith('/token') 
+        ? ytSessionServer 
+        : `${ytSessionServer.replace(/\/$/, '')}/token`;
+      const response = await fetch(url, { 
+        signal: AbortSignal.timeout(5000) // Timeout de 5 secondes
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const poToken = data.potoken || data.poToken || data.po_token;
+        if (poToken) {
+          console.log('✅ Token PO récupéré depuis le service externe');
+          return poToken;
+        }
+      }
+    } catch (error: any) {
+      console.warn('⚠️ Impossible de récupérer le token PO depuis le service:', error.message?.substring(0, 100));
+    }
+  }
+  
+  // Option 2: Utiliser un token PO défini dans les variables d'environnement
+  const envPoToken = process.env.YT_PO_TOKEN;
+  if (envPoToken) {
+    console.log('✅ Token PO récupéré depuis les variables d\'environnement');
+    return envPoToken;
+  }
+  
+  // Aucun token PO disponible
+  return null;
+}
+
 // Fonction pour télécharger avec yt-dlp
 async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: string, videoTitle?: string, quality?: string, playerClient: string = 'web'): Promise<{ filePath: string; fileName: string }> {
   const ytDlpPath = await findYtDlpPath();
@@ -273,12 +313,21 @@ async function downloadWithYtDlp(url: string, format: 'mp3' | 'mp4', tempDir: st
   }
   const finalFileName = `${cleanFileName}.${format}`;
   
+  // Récupérer un token PO si disponible (nécessaire pour les formats haute qualité)
+  const poToken = await getPoToken();
+  
   console.log(`🔧 Exécution de yt-dlp (cela peut prendre quelques minutes)...`);
   console.log(`📋 URL traitée: ${urlOnly}`);
   console.log(`📁 Dossier de sortie: ${tempDir}`);
   console.log(`📝 Nom de fichier final: ${finalFileName}`);
   console.log(`🎯 Qualité sélectionnée: ${quality || 'best'}`);
   console.log(`🌐 Client YouTube utilisé: ${playerClient}`);
+  if (poToken) {
+    console.log(`🔑 Token PO disponible (nécessaire pour formats haute qualité)`);
+  } else {
+    console.log(`⚠️ Aucun token PO disponible (formats haute qualité peuvent être limités)`);
+    console.log(`💡 Pour activer les tokens PO, configurez YT_SESSION_SERVER ou YT_PO_TOKEN`);
+  }
   console.log(`💡 Le client iOS est généralement plus fiable pour les formats haute qualité (basé sur l'analyse de Cobalt)`);
   
   // Récupérer les formats disponibles AVANT de télécharger
